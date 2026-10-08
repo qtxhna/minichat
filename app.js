@@ -30,7 +30,8 @@
     systemPrompt: "",
     rememberKey: true,
     theme: "auto",         /* auto | light | dark */
-    settingsOpen: null     /* true/false = 用户手动选过；null = 自动（没填 Key 就展开） */
+    settingsOpen: null,    /* true/false = 用户手动选过；null = 自动（没填 Key 就展开） */
+    mdEnabled: true        /* 回答用 Markdown 排版 */
   };
 
   /* ----------------------------- 存储层 --------------------------------- */
@@ -379,6 +380,7 @@
       s.theme = DEFAULT_SETTINGS.theme;
     }
     if (s.settingsOpen !== true && s.settingsOpen !== false) { s.settingsOpen = null; }
+    s.mdEnabled = (s.mdEnabled === false) ? false : true;
     return s;
   }
 
@@ -549,10 +551,221 @@
       systemPrompt: settings.systemPrompt,
       rememberKey: settings.rememberKey,
       theme: settings.theme,
-      settingsOpen: settings.settingsOpen
+      settingsOpen: settings.settingsOpen,
+      mdEnabled: settings.mdEnabled
     };
     storeSet(KEY_SETTINGS, JSON.stringify(toSave));
     storeSet(KEY_CURRENT, currentId || "");
+  }
+
+  /* ----------------------------- Markdown -------------------------------- */
+  /* 自己写的小解析器：正则 + 字符串，不用任何新 API，也不用 innerHTML。
+     所有文字都通过 createTextNode 塞进 DOM —— 模型输出里的 <script> 之类
+     结构上就不可能变成标签，所以不存在注入问题。
+     正则刻意避开 ES2018 语法（lookbehind、命名分组、dotAll），只用了最普通的
+     字符类和量词；量词都带上下界，避免病态回溯把老设备卡死。 */
+
+  var MD_INLINE_RE = /(`+)([^\n]*?)\1|!?\[([^\]\n]*)\]\(([^)\s\n]+)(?:\s+"[^"\n]*")?\)|\*\*(\S[^\n]{0,498}?)\*\*|~~(\S[^\n]{0,498}?)~~|\*(\S[^\n]{0,498}?)\*|\n/;
+
+  var MD_BULLET_RE = /^\s*([-*+])\s+(.*)$/;
+  var MD_ORDERED_RE = /^\s*\d+[.)]\s+(.*)$/;
+  var MD_FENCE_RE = /^\s*(`{3,}|~{3,})\s*(.*)$/;
+  var MD_HEADING_RE = /^(#{1,6})\s+(.*)$/;
+  var MD_HR_RE = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
+  var MD_QUOTE_RE = /^\s*>/;
+
+  /* 只允许 http/https/mailto；javascript:、data: 之类一律不生成链接 */
+  function mdSafeHref(url) {
+    var u = trim(String(url || ""));
+    if (!u) { return null; }
+    if (/[\u0000-\u001f\u007f]/.test(u)) { return null; }
+    if (/^https?:\/\/[^\s]+$/i.test(u)) { return u; }
+    if (/^mailto:[^\s]+$/i.test(u)) { return u; }
+    return null;
+  }
+
+  /* 行内解析：返回一串 {type, text, href} 描述，交给 DOM 构造器去建节点 */
+  function mdParseInline(text) {
+    var out = [];
+    var re = new RegExp(MD_INLINE_RE.source, "g");   /* 每次新建：这个函数会被递归调用 */
+    var last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) { re.lastIndex++; continue; }   /* 防零长度死循环 */
+      if (m.index > last) { out.push({ type: "text", text: text.substring(last, m.index) }); }
+      if (m[1] !== undefined) { out.push({ type: "code", text: m[2] }); }
+      else if (m[3] !== undefined) { out.push({ type: "link", text: m[3], href: m[4] }); }
+      else if (m[5] !== undefined) { out.push({ type: "strong", text: m[5] }); }
+      else if (m[6] !== undefined) { out.push({ type: "del", text: m[6] }); }
+      else if (m[7] !== undefined) { out.push({ type: "em", text: m[7] }); }
+      else { out.push({ type: "br" }); }
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) { out.push({ type: "text", text: text.substring(last) }); }
+    return out;
+  }
+
+  function mdAppendInline(container, text) {
+    var nodes = mdParseInline(text);
+    var i, n, node, href;
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      if (n.type === "text") {
+        container.appendChild(document.createTextNode(n.text));
+      } else if (n.type === "br") {
+        container.appendChild(document.createElement("br"));
+      } else if (n.type === "code") {
+        node = document.createElement("code");
+        node.appendChild(document.createTextNode(n.text));
+        container.appendChild(node);
+      } else if (n.type === "strong" || n.type === "em" || n.type === "del") {
+        node = document.createElement(n.type);
+        mdAppendInline(node, n.text);       /* 允许 **a `b` c** 这种嵌套，层级有限不会递归爆 */
+        container.appendChild(node);
+      } else if (n.type === "link") {
+        href = mdSafeHref(n.href);
+        if (href) {
+          node = document.createElement("a");
+          node.setAttribute("href", href);
+          node.setAttribute("target", "_blank");
+          node.setAttribute("rel", "noopener noreferrer");
+          mdAppendInline(node, n.text);
+        } else {
+          /* 不安全的协议：退化成纯文字，连链接结构都不保留 */
+          node = document.createTextNode(n.text + " (" + n.href + ")");
+        }
+        container.appendChild(node);
+      }
+    }
+  }
+
+  /* 块级解析：把整段文字切成 段落 / 标题 / 列表 / 引用 / 代码块 / 分隔线 */
+  function mdParseBlocks(text) {
+    var lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+    var blocks = [];
+    var i = 0, line, m, buf, items, closeRe;
+
+    while (i < lines.length) {
+      line = lines[i];
+
+      if (trim(line) === "") { i++; continue; }
+
+      m = MD_FENCE_RE.exec(line);
+      if (m) {
+        closeRe = m[1].charAt(0) === "`" ? /^\s*`{3,}\s*$/ : /^\s*~{3,}\s*$/;
+        buf = [];
+        i++;
+        while (i < lines.length && !closeRe.test(lines[i])) { buf.push(lines[i]); i++; }
+        if (i < lines.length) { i++; }        /* 吃掉结束的围栏 */
+        blocks.push({ type: "code", lang: trim(m[2]), text: buf.join("\n") });
+        continue;
+      }
+
+      if (MD_HR_RE.test(line)) { blocks.push({ type: "hr" }); i++; continue; }
+
+      m = MD_HEADING_RE.exec(line);
+      if (m) {
+        blocks.push({ type: "h", level: m[1].length, text: trim(m[2]) });
+        i++;
+        continue;
+      }
+
+      if (MD_QUOTE_RE.test(line)) {
+        buf = [];
+        while (i < lines.length && MD_QUOTE_RE.test(lines[i])) {
+          buf.push(lines[i].replace(/^\s*>\s?/, ""));
+          i++;
+        }
+        blocks.push({ type: "quote", text: buf.join("\n") });
+        continue;
+      }
+
+      /* 列表：缩进一律当同级（不做嵌套），但"续行"会并进上一条 */
+      m = MD_BULLET_RE.exec(line);
+      if (m) {
+        items = [];
+        while (i < lines.length) {
+          m = MD_BULLET_RE.exec(lines[i]);
+          if (m) { items.push(m[2]); i++; continue; }
+          if (items.length && /^\s+\S/.test(lines[i])) {
+            items[items.length - 1] += "\n" + trim(lines[i]);
+            i++;
+            continue;
+          }
+          break;
+        }
+        blocks.push({ type: "ul", items: items });
+        continue;
+      }
+      m = MD_ORDERED_RE.exec(line);
+      if (m) {
+        items = [];
+        while (i < lines.length) {
+          m = MD_ORDERED_RE.exec(lines[i]);
+          if (m) { items.push(m[1]); i++; continue; }
+          if (items.length && /^\s+\S/.test(lines[i])) {
+            items[items.length - 1] += "\n" + trim(lines[i]);
+            i++;
+            continue;
+          }
+          break;
+        }
+        blocks.push({ type: "ol", items: items });
+        continue;
+      }
+
+      /* 剩下的是段落：一直吃到空行或下一个块级结构 */
+      buf = [];
+      while (i < lines.length &&
+             trim(lines[i]) !== "" &&
+             !MD_FENCE_RE.test(lines[i]) &&
+             !MD_QUOTE_RE.test(lines[i]) &&
+             !MD_BULLET_RE.test(lines[i]) &&
+             !MD_ORDERED_RE.test(lines[i]) &&
+             !MD_HEADING_RE.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      if (buf.length === 0) { buf.push(lines[i]); i++; }   /* 保险：绝不让循环卡住 */
+      blocks.push({ type: "p", text: buf.join("\n") });
+    }
+    return blocks;
+  }
+
+  function mdAppendBlocks(container, text) {
+    var blocks = mdParseBlocks(text);
+    var i, k, b, node, li, codeEl;
+    for (i = 0; i < blocks.length; i++) {
+      b = blocks[i];
+      if (b.type === "code") {
+        node = document.createElement("pre");
+        codeEl = document.createElement("code");
+        codeEl.appendChild(document.createTextNode(b.text));
+        node.appendChild(codeEl);
+        container.appendChild(node);
+      } else if (b.type === "hr") {
+        container.appendChild(document.createElement("hr"));
+      } else if (b.type === "h") {
+        node = document.createElement("h" + b.level);
+        mdAppendInline(node, b.text);
+        container.appendChild(node);
+      } else if (b.type === "quote") {
+        node = document.createElement("blockquote");
+        mdAppendInline(node, b.text);
+        container.appendChild(node);
+      } else if (b.type === "ul" || b.type === "ol") {
+        node = document.createElement(b.type);
+        for (k = 0; k < b.items.length; k++) {
+          li = document.createElement("li");
+          mdAppendInline(li, b.items[k]);
+          node.appendChild(li);
+        }
+        container.appendChild(node);
+      } else {
+        node = document.createElement("p");
+        mdAppendInline(node, b.text);
+        container.appendChild(node);
+      }
+    }
   }
 
   /* ----------------------------- 渲染 ----------------------------------- */
@@ -600,7 +813,15 @@
       wrap.appendChild(head);
 
       body = el("div", "msg-body");
-      body.appendChild(document.createTextNode(m.content === "" && m.pending ? "正在思考…" : m.content));
+      var bodyText = (m.content === "" && m.pending) ? "正在思考…" : m.content;
+      /* 只给 AI 的回答做排版：用户自己发的按原样显示，免得打几个 * 就变样 */
+      var useMd = settings.mdEnabled && m.role === "assistant" && !m.pending && bodyText !== "";
+      if (useMd) {
+        body.className = "msg-body md";
+        mdAppendBlocks(body, bodyText);
+      } else {
+        body.appendChild(document.createTextNode(bodyText));
+      }
       wrap.appendChild(body);
 
       if (m.reasoning) {
@@ -626,6 +847,7 @@
     $("systemPrompt").value = settings.systemPrompt;
     $("baseUrl").value = settings.baseUrl;
     $("themeSel").value = settings.theme;
+    $("mdEnabled").checked = settings.mdEnabled;
   }
 
   function readFormIntoSettings() {
@@ -636,6 +858,7 @@
     settings.baseUrl = trim($("baseUrl").value) || DEFAULT_SETTINGS.baseUrl;
     var t = $("themeSel").value;
     if (t === "dark" || t === "light" || t === "auto") { settings.theme = t; }
+    settings.mdEnabled = !!$("mdEnabled").checked;
   }
 
   function updateStoreNote() {
@@ -1017,6 +1240,13 @@
     $("themeSel").onchange = function () {
       setTheme($("themeSel").value);
       setStatus("外观已保存");
+    };
+    /* Markdown 开关：立刻重画，方便对比效果 */
+    $("mdEnabled").onchange = function () {
+      settings.mdEnabled = !!$("mdEnabled").checked;
+      persistSettings();
+      autoScroll = isNearBottom();
+      renderMessages();
     };
     bindSystemTheme();
 

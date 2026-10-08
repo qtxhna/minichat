@@ -82,6 +82,8 @@
           <option value="light">浅色</option>
           <option value="dark">深色</option>
         </select>
+
+        <label class="chk"><input type="checkbox" id="mdEnabled"> 回答用 Markdown 排版</label>
       </div>
     </div>
   </div>
@@ -108,7 +110,7 @@
         <!-- 手机键盘没有 Shift，用这个按钮插入换行；桌面端隐藏（用 Shift+Enter 即可） -->
         <button type="button" id="newlineBtn" class="btn btn-newline">↵ 换行</button>
         <button type="button" id="send" class="btn btn-primary">发送</button>
-        <span id="hint" class="note">回答为纯文本显示，不做 Markdown 排版。</span>
+        <span id="hint" class="note">回答支持基础 Markdown 排版（可在「设置」里关掉）。</span>
       </div>
     </div>
   </div>

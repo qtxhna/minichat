@@ -46,7 +46,8 @@ var byId = {};
  "newChat", "clearChat", "convList", "storeNote", "convTitle", "status",
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
- "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock"].forEach(function (id) { byId[id] = makeEl("div"); });
+ "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
+ "mdEnabled"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
 metaTheme.setAttribute("name", "theme-color");
@@ -134,6 +135,58 @@ function check(name, cond, extra) {
   else { console.log("  FAIL  " + name + (extra ? "  -> " + extra : "")); failures.push(name); }
 }
 
+/* 把 DOM 子树压成一行字符串，方便断言结构 */
+function repr(node) {
+  if (!node) { return "<null>"; }
+  if (node.nodeType === 3) { return node.textContent; }
+  var s = node.tagName;
+  if (node.className) { s += "." + node.className; }
+  if (node.attrs && node.attrs.href) { s += "[" + node.attrs.href + "]"; }
+  var kids = [], i;
+  for (i = 0; i < node.childNodes.length; i++) { kids.push(repr(node.childNodes[i])); }
+  return kids.length ? s + "(" + kids.join(",") + ")" : s;
+}
+
+/* 走真实链路：发一条消息 → 用假回答填充 → 取出这条回答的 .msg-body */
+function renderAssistant(mdText) {
+  byId.input.value = "让我看看";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: mdText } }] }));
+  var msgs = byId.messages.childNodes;
+  return msgs[msgs.length - 1].childNodes[1];
+}
+
+/* 子树里是否真的存在某个标签（注意：不能拿结构串去 indexOf("img")，
+   因为纯文字里也可能出现 img 这几个字母） */
+function hasTag(node, tag) {
+  if (!node || node.nodeType === 3) { return false; }
+  if (node.tagName && String(node.tagName).toLowerCase() === tag) { return true; }
+  var i;
+  for (i = 0; i < node.childNodes.length; i++) {
+    if (hasTag(node.childNodes[i], tag)) { return true; }
+  }
+  return false;
+}
+
+/* 递归取出全部文字，不关心排版结构 */
+function textOf(node) {
+  if (!node) { return ""; }
+  if (node.nodeType === 3) { return node.textContent; }
+  var s = "", i;
+  for (i = 0; i < node.childNodes.length; i++) { s += textOf(node.childNodes[i]); }
+  return s;
+}
+
+/* 只要子节点的结构串 */
+function kidsRepr(node) {
+  var kids = [], i;
+  for (i = 0; i < node.childNodes.length; i++) { kids.push(repr(node.childNodes[i])); }
+  return kids.join("|");
+}
+
+/* 渲染一条 AI 回答，返回其内部结构串 */
+function mdRepr(mdText) { return kidsRepr(renderAssistant(mdText)); }
+
 console.log("\n[1] 首次加载（空存储）");
 loadApp();
 check("自动创建了一个空对话", byId.convList.childNodes.length === 1);
@@ -172,7 +225,7 @@ console.log("\n[4] 收到回答");
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "你好！我是 DeepSeek。", reasoning_content: "先打招呼" } }] }));
 check("回答已渲染", byId.messages.childNodes.length === 2);
 var lastMsg = byId.messages.childNodes[1];
-check("回答文本正确", JSON.stringify(lastMsg.childNodes[1].childNodes[0].textContent) === JSON.stringify("你好！我是 DeepSeek。"));
+check("回答文本正确", textOf(lastMsg.childNodes[1]) === "你好！我是 DeepSeek。", textOf(lastMsg.childNodes[1]));
 check("思考过程单独显示", lastMsg.childNodes.length === 3);
 check("按钮恢复为发送", byId.send.childNodes[0].textContent === "发送");
 check("消息已落盘", /DeepSeek/.test(lsData["minichat.conversations.v1"]));
@@ -454,6 +507,88 @@ check("HTML 里历史对话块排在设置块之前", posList > -1 && posSetting
   posList + " vs " + posSettings);
 check("「＋ 新对话 / 清空当前对话」在历史对话块内",
   htmlSrc.indexOf("id=\"newChat\"") > -1 && htmlSrc.indexOf("id=\"newChat\"") < posList);
+
+console.log("\n[15] Markdown 排版");
+lsData = {};
+lsQuota = 5 * 1024 * 1024;
+global.window.localStorage = localStorage;
+window.matchMedia = function (q) { return { matches: false, media: q, addListener: function () {}, addEventListener: function () {} }; };
+loadApp();
+byId.apiKey.value = "sk-md";
+byId.saveSettings.onclick();
+
+var mdCases = [
+  ["**粗体**", "p(strong(粗体))"],
+  ["*斜体*", "p(em(斜体))"],
+  ["~~删除~~", "p(del(删除))"],
+  ["`x = 1`", "p(code(x = 1))"],
+  ["# 一级标题", "h1(一级标题)"],
+  ["### 三级标题", "h3(三级标题)"],
+  ["- 甲\n- 乙", "ul(li(甲),li(乙))"],
+  ["1. 甲\n2. 乙", "ol(li(甲),li(乙))"],
+  ["> 引用一句", "blockquote(引用一句)"],
+  ["---", "hr"],
+  ["第一行\n第二行", "p(第一行,br,第二行)"],
+  ["[链接](https://example.com)", "p(a[https://example.com](链接))"],
+  ["```js\nvar a = 1;\n```", "pre(code(var a = 1;))"],
+  ["代码里有星号 `**不是粗体**`", "p(代码里有星号 ,code(**不是粗体**))"],
+  ["变量名 my_var_name 不该被斜体", "p(变量名 my_var_name 不该被斜体)"],
+  ["**粗** 和 *斜* 混排", "p(strong(粗), 和 ,em(斜), 混排)"],
+  ["列表续行\n- 第一项\n  接着写的内容\n- 第二项", "p(列表续行)|ul(li(第一项,br,接着写的内容),li(第二项))"]
+];
+var ci, got;
+for (ci = 0; ci < mdCases.length; ci++) {
+  got = mdRepr(mdCases[ci][0]);
+  check("渲染 " + JSON.stringify(mdCases[ci][0]).substring(0, 34), got === mdCases[ci][1], got);
+}
+
+/* 安全：模型输出里的标签只能是文字，不能变成元素 */
+var body1 = renderAssistant("<script>alert(1)</script>");
+check("script 标签不会被创建", !hasTag(body1, "script"), repr(body1));
+check("标签内容完整保留为文字", textOf(body1) === "<script>alert(1)</script>", textOf(body1));
+
+var body2 = renderAssistant("<img src=x onerror=alert(1)>");
+check("img 标签不会被创建", !hasTag(body2, "img"), repr(body2));
+check("onerror 只是文字", textOf(body2).indexOf("onerror=alert(1)") > -1, textOf(body2));
+
+var body3 = renderAssistant("[点我](javascript:alert(1))");
+check("javascript: 链接被拒绝（不生成 a 元素）", !hasTag(body3, "a"), repr(body3));
+check("但文字仍然能看到", textOf(body3).indexOf("javascript:alert(1)") > -1, textOf(body3));
+
+var body4 = renderAssistant("[点我](data:text/html,<b>x</b>)");
+check("data: 链接被拒绝", !hasTag(body4, "a"), repr(body4));
+
+var body5 = renderAssistant("```\n<script>alert(1)</script>\n```");
+check("代码块里的标签也是纯文字", !hasTag(body5, "script") && textOf(body5) === "<script>alert(1)</script>", repr(body5));
+
+var body6 = renderAssistant("![图片](https://example.com/a.png)");
+check("图片不会被真的加载（只是链接）", !hasTag(body6, "img") && hasTag(body6, "a"), repr(body6));
+check("链接带 https 地址", body6.childNodes[0].childNodes[0].attrs.href === "https://example.com/a.png",
+  body6.childNodes[0].childNodes[0].attrs.href);
+
+/* 病态输入不能把解析器卡死（量词都带下界） */
+var t0 = Date.now();
+mdRepr(new Array(2001).join("*") + " 结尾");
+var dt = Date.now() - t0;
+check("2000 个星号不会卡死（" + dt + "ms）", dt < 2000, dt + "ms");
+
+/* 用户可以关掉排版 */
+byId.mdEnabled.checked = false;
+byId.mdEnabled.onchange();
+var plain = mdRepr("**粗体**");
+check("关掉后按纯文本显示", plain === "**粗体**", plain);
+check("开关状态已落盘", JSON.parse(lsData["minichat.settings.v1"]).mdEnabled === false);
+byId.mdEnabled.checked = true;
+byId.mdEnabled.onchange();
+check("重新打开后恢复排版", mdRepr("**粗体**") === "p(strong(粗体))");
+
+/* 用户自己发的消息不做排版 */
+byId.input.value = "**我不是粗体**";
+byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+var allMsgs = byId.messages.childNodes;
+check("用户消息保持原样", kidsRepr(allMsgs[allMsgs.length - 2].childNodes[1]) === "**我不是粗体**",
+  kidsRepr(allMsgs[allMsgs.length - 2].childNodes[1]));
+lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
 
 console.log("\n=========================================");
 if (failures.length) { console.log("失败项 " + failures.length + " 个: " + failures.join(" | ")); process.exit(1); }
