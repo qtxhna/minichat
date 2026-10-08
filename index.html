@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 深色模式：在首次绘制之前就把 html 的 class 定下来，避免"先亮一下再变暗"。
+     只用到 localStorage + matchMedia，两者都很老；任何一步失败都退回浅色。 -->
+<script>
+(function () {
+  var mode = "auto", dark = false, raw = null, s = null;
+  try { raw = window.localStorage.getItem("minichat.settings.v1"); } catch (e) { raw = null; }
+  if (raw) {
+    try { s = JSON.parse(raw); } catch (e2) { s = null; }
+    if (s && (s.theme === "dark" || s.theme === "light" || s.theme === "auto")) { mode = s.theme; }
+  }
+  if (mode === "dark") { dark = true; }
+  else if (mode === "auto") {
+    try {
+      dark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    } catch (e3) { dark = false; }
+  }
+  document.documentElement.className = dark ? "dark" : "light";
+})();
+</script>
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<!-- viewport-fit=cover 让内容铺到刘海区，配合 CSS 里的 safe-area-inset 使用；
+     老浏览器不认识这个属性，会自动忽略。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f4f7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="MiniChat">
+<meta name="format-detection" content="telephone=no">
+<title>MiniChat - DeepSeek 对话</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ===== 侧栏：手机上默认收起，由顶栏「菜单」按钮呼出 ===== -->
+  <div id="sidebar">
+    <div class="brand">MiniChat</div>
+
+    <!-- 历史对话放最上面 -->
+    <div class="side-block">
+      <div class="side-title">历史对话</div>
+      <div class="conv-actions">
+        <button type="button" id="newChat" class="btn conv-act-left">＋ 新对话</button>
+        <button type="button" id="clearChat" class="btn conv-act-right">清空当前对话</button>
+      </div>
+      <div id="convList"></div>
+      <div id="storeNote" class="note"></div>
+    </div>
+
+    <!-- 设置：可折叠。没填 API Key 时默认展开，填过之后默认折叠 -->
+    <div class="side-block" id="settingsBlock">
+      <div class="side-head" id="settingsHead">
+        <span class="caret" id="settingsCaret">▾</span><span class="side-title-inline">设置</span><span class="head-hint" id="settingsHint"></span>
+      </div>
+
+      <div id="settingsBody">
+        <label for="apiKey">DeepSeek API Key</label>
+        <input type="password" id="apiKey" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="sk-xxxxxxxx">
+        <label class="chk"><input type="checkbox" id="rememberKey"> 记住 Key（明文存在本机浏览器里）</label>
+        <button type="button" id="saveSettings" class="btn btn-block">保存设置</button>
+
+        <label for="model">模型</label>
+        <select id="model">
+          <option value="deepseek-chat">deepseek-chat</option>
+          <option value="deepseek-reasoner">deepseek-reasoner</option>
+        </select>
+
+        <label for="systemPrompt">系统提示词（可留空）</label>
+        <textarea id="systemPrompt" rows="2" spellcheck="false" placeholder="例如：你是一个简洁的助手"></textarea>
+
+        <label for="baseUrl">接口地址（高级）</label>
+        <input type="text" id="baseUrl" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="https://api.deepseek.com">
+
+        <label for="themeSel">外观</label>
+        <select id="themeSel">
+          <option value="auto">跟随系统</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 聊天区 ===== -->
+  <div id="main">
+    <!-- 顶栏放在 #main 内部：
+         手机上它是 position:fixed，固定定位不受这个父元素影响，依然贴屏幕顶端；
+         桌面上它是 position:absolute，相对 #main 定位，正好只占聊天栏宽度。 -->
+    <div id="topbar">
+      <button type="button" id="menuBtn">☰ 菜单</button>
+      <!-- 深浅色一键切换（文字由 JS 按当前主题改写） -->
+      <button type="button" id="themeBtn" title="切换深色 / 浅色">☾</button>
+      <span id="convTitle">新对话</span>
+      <span id="status" class="status"></span>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="composer">
+      <textarea id="input" rows="3" spellcheck="false" enterkeyhint="send"
+        placeholder="在这里输入消息…（手机上按键盘的发送键，电脑上按 Enter 发送）"></textarea>
+      <div class="composer-actions">
+        <!-- 手机键盘没有 Shift，用这个按钮插入换行；桌面端隐藏（用 Shift+Enter 即可） -->
+        <button type="button" id="newlineBtn" class="btn btn-newline">↵ 换行</button>
+        <button type="button" id="send" class="btn btn-primary">发送</button>
+        <span id="hint" class="note">回答为纯文本显示，不做 Markdown 排版。</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="overlay"></div>
+  <button type="button" id="toBottom" title="回到底部">↓</button>
+
+</div>
+
+<noscript>
+  <p style="padding:20px;color:#900">本页面需要启用 JavaScript 才能使用。</p>
+</noscript>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,498 @@
+/* ============================================================================
+ * MiniChat 样式 —— 移动优先
+ *
+ * 兼容目标：Safari 12 / Android 4.4 级别的老浏览器。
+ * 因此只用 float / absolute / fixed / 简单盒模型，不用 flex、grid、CSS 变量、动画。
+ * 默认（基础）布局就是手机布局：单列 + 抽屉式侧栏 + 输入框在文档流里。
+ * 桌面布局放在 min-width:701px 的媒体查询里。
+ * 这样即使浏览器不支持媒体查询，拿到的也是能用的单列手机版。
+ * ========================================================================== */
+
+* { -webkit-box-sizing: border-box; box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;   /* 横屏/旋转时不要放大字体 */
+  -ms-text-size-adjust: 100%;
+  height: auto;
+}
+
+body {
+  font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #222;
+  background: #f7f8fa;
+  margin: 0;
+  padding: 0;
+  height: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#app { height: auto; }
+
+/* ==========================================================================
+ * 顶栏（移动端固定在顶部）
+ * ======================================================================== */
+
+#topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  min-height: 44px;
+  padding: 8px 10px 6px 10px;
+  /* 刘海屏安全区：不支持 env()/calc() 时下面这行会被忽略，退回上面的 padding */
+  padding-top: calc(8px + constant(safe-area-inset-top));
+  padding-top: calc(8px + env(safe-area-inset-top));
+  border-bottom: 1px solid #d5dae1;
+  background: #f2f4f7;
+}
+
+#convTitle {
+  font-weight: bold;
+  font-size: 15px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* 抽屉开关 + 深浅色切换：移动端可见，桌面端隐藏菜单键 */
+#menuBtn, #themeBtn {
+  display: inline-block;
+  min-width: 44px;
+  min-height: 32px;
+  margin: 0 8px 0 0;
+  padding: 4px 10px;
+  font-size: 15px;
+  font-family: inherit;
+  border: 1px solid #9aa3b0;
+  border-radius: 4px;
+  background: #fff;
+  color: #222;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+#themeBtn {
+  float: right;
+  margin: 0;
+  width: 44px;
+  padding: 4px 0;
+  text-align: center;
+  line-height: 22px;
+}
+
+/* 状态提示：颜色用 class 控制，不用内联样式 —— 否则深色模式覆盖不掉 */
+.status {
+  display: block;
+  clear: both;            /* 让提示落到「菜单 / 标题 / 主题键」那一行下面 */
+  margin-top: 2px;
+  font-size: 12px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.status.err { color: #a33; }
+.status.ok { color: #2f6fd0; }
+
+/* ==========================================================================
+ * 侧栏：移动端是抽屉，默认收起
+ * ======================================================================== */
+
+#sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  display: none;
+  width: 86%;
+  max-width: 330px;
+  height: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #e9ecf1;
+  border-right: 1px solid #c9ced6;
+  padding: 0 0 24px 0;
+}
+#sidebar.open { display: block; }
+
+#overlay {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: none;
+  background: rgba(0, 0, 0, 0.4);
+}
+#overlay.open { display: block; }
+
+.brand {
+  font-size: 16px;
+  font-weight: bold;
+  padding: 12px;
+  border-bottom: 1px solid #c9ced6;
+  background: #dde2e9;
+}
+
+.side-block {
+  padding: 12px;
+  border-bottom: 1px solid #d5dae1;
+}
+
+.side-title { font-weight: bold; margin-bottom: 6px; }
+
+/* 可折叠的设置标题（整行可点，手指好按） */
+.side-head {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 8px 0;
+  line-height: 26px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.side-head .caret { display: inline-block; width: 18px; }
+.side-title-inline { font-weight: bold; }
+.head-hint { color: #a33; font-size: 12px; margin-left: 2px; }
+html.dark .head-hint { color: #ff9a92; }
+
+/* 「＋ 新对话 / 清空当前对话」并排：用 float，不用 flex */
+.conv-actions { margin: 0 0 2px 0; }
+.conv-actions:after { content: ""; display: table; clear: both; }
+.conv-actions .btn { width: 48%; min-height: 44px; padding-left: 0; padding-right: 0; }
+.conv-act-left { float: left; }
+.conv-act-right { float: right; }
+
+label { display: block; margin: 8px 0 4px 0; font-size: 13px; color: #555; }
+label.chk { font-size: 13px; color: #555; margin-top: 10px; }
+label.chk input { width: 20px; height: 20px; vertical-align: middle; margin: 0 6px 0 0; }
+
+input[type="text"], input[type="password"], select, textarea {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #b6bcc5;
+  background: #fff;
+  color: #222;
+  font-family: inherit;
+  /* 16px：iOS 上小于 16px 会在聚焦时自动放大整个页面 */
+  font-size: 16px;
+  border-radius: 4px;
+  /* 刻意不写 -webkit-appearance:none：保留 iOS/Android 原生控件外观，
+     select 的下拉箭头、输入框的清除按钮都是用户熟悉的交互提示。 */
+}
+
+textarea { resize: none; }
+
+.btn {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid #9aa3b0;
+  background: #f7f8fa;
+  color: #222;
+  font-family: inherit;
+  font-size: 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.btn:active { background: #dfe4ea; }
+.btn-block { display: block; width: 100%; margin-top: 8px; }
+.btn-primary { background: #2f6fd0; border-color: #24589f; color: #fff; }
+.btn-primary:active { background: #24589f; }
+.btn[disabled] { color: #999; background: #ececec; border-color: #ccc; cursor: default; }
+.btn-stop { background: #b3352f; border-color: #8e2a25; color: #fff; }
+
+/* 历史对话条目：整行可点，删除按钮 36px 便于手指点 */
+.conv-item {
+  position: relative;
+  margin-top: 6px;
+  padding: 12px 46px 12px 12px;
+  border: 1px solid #ccd2da;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 15px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.conv-item.active { background: #dbe7f8; border-color: #7ea6dd; font-weight: bold; }
+.conv-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 36px;
+  height: 36px;
+  line-height: 34px;
+  text-align: center;
+  color: #888;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 22px;
+}
+.conv-del:active { color: #b3352f; border-color: #d9b3b1; background: #fdf3f2; }
+
+.note { font-size: 12px; color: #777; line-height: 1.45; margin-top: 8px; }
+
+/* ==========================================================================
+ * 消息区：普通文档流（关键：iOS 键盘弹出时系统会自动把输入框滚到键盘上方，
+ * 若把输入框做成 position:fixed，老 iOS 上会被键盘直接挡住）
+ * ======================================================================== */
+
+#main { position: static; margin: 0; height: auto; }
+
+#messages {
+  position: static;
+  overflow: visible;
+  /* 顶部留出固定顶栏的高度，加载后由 JS 按实际顶栏高度校准 */
+  padding: 64px 10px 12px 10px;
+}
+
+#composer {
+  position: static;
+  padding: 8px 10px 12px 10px;
+  padding-bottom: calc(12px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid #d5dae1;
+  background: #f2f4f7;
+}
+
+/* 固定 3 行高度：不做 JS 自动增高，少一处老 iOS 上的不确定性。
+   内容超长时输入框内部滚动。 */
+#input {
+  height: 66px;
+  line-height: 1.4;
+  overflow-y: auto;
+}
+
+.composer-actions { margin-top: 8px; }
+.composer-actions .btn { float: right; margin-left: 8px; }
+.composer-actions .btn-newline { float: left; min-width: 76px; background: #fff; }
+.composer-actions:after { content: ""; display: table; clear: both; }
+#hint { display: none; }   /* 手机上不占地方 */
+
+.empty { color: #888; padding: 20px 4px; }
+
+/* ==========================================================================
+ * 消息气泡
+ * ======================================================================== */
+
+.msg { margin: 0 0 12px 0; }
+.msg-head { font-size: 11px; color: #888; margin-bottom: 3px; }
+.msg-body {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  padding: 10px 12px;
+  border: 1px solid #d5dae1;
+  border-radius: 6px;
+  background: #fff;
+}
+.msg.user .msg-body { background: #e7f0fd; border-color: #b9d0ee; }
+.msg.assistant .msg-body { background: #fff; }
+.msg.error .msg-body { background: #fdf1f0; border-color: #e0b4b1; color: #8e2a25; }
+.msg.pending .msg-body { color: #777; }
+
+.reasoning {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 3px solid #ccc;
+  background: #f4f4f4;
+  color: #666;
+  font-size: 12px;
+}
+
+/* 「回到底部」浮动按钮（仅移动端，滚动离底部较远时出现） */
+#toBottom {
+  display: none;
+  position: fixed;
+  right: 12px;
+  bottom: 140px;
+  z-index: 15;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  line-height: 42px;
+  text-align: center;
+  font-size: 18px;
+  font-family: inherit;
+  color: #333;
+  border: 1px solid #9aa3b0;
+  border-radius: 22px;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* ==========================================================================
+ * 桌面 / 平板（≥701px）：左栏常驻 + 消息区内部滚动
+ * ======================================================================== */
+
+@media (min-width: 701px) {
+  html, body { height: 100%; }
+  #app { height: 100%; }
+
+  #menuBtn { display: none; }
+  #themeBtn { min-height: 0; width: auto; padding: 2px 8px; font-size: 13px; line-height: 18px; }
+  #overlay { display: none !important; }
+  #toBottom { display: none !important; }
+  #hint { display: inline; }
+
+  #sidebar {
+    position: static;
+    display: block;
+    float: left;
+    width: 240px;
+    max-width: none;
+    height: 100%;
+    border-right: 1px solid #c9ced6;
+    padding: 0 0 20px 0;
+  }
+  #sidebar.open { display: block; }
+
+  .brand { padding: 10px 12px; font-size: 15px; }
+  .side-block { padding: 10px 12px; }
+  label { margin: 6px 0 3px 0; font-size: 12px; }
+  label.chk { font-size: 12px; margin-top: 6px; }
+  label.chk input { width: auto; height: auto; }   /* 桌面端恢复原生小尺寸 */
+
+  input[type="text"], input[type="password"], select, textarea {
+    font-size: 13px;
+    padding: 5px 6px;
+  }
+  textarea { resize: vertical; }
+
+  #topbar {
+    position: absolute;
+    height: 38px;
+    min-height: 0;
+    line-height: 37px;
+    padding: 0 10px;
+    overflow: hidden;
+    background: #f7f8fa;
+  }
+  #convTitle { font-size: 14px; }
+  .status {
+    float: right;
+    display: inline;
+    clear: none;
+    margin-top: 0;
+    max-width: 60%;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  #main {
+    position: relative;
+    margin-left: 240px;
+    height: 100%;
+    background: #fff;
+  }
+
+  #messages {
+    position: absolute;
+    top: 39px;
+    bottom: 122px;
+    left: 0;
+    right: 0;
+    overflow-y: auto;
+    padding: 10px 12px;
+  }
+
+  #composer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 121px;
+    padding: 8px 12px;
+    background: #f7f8fa;
+  }
+  #input { height: 66px; min-height: 0; max-height: none; }
+  .composer-actions .btn-newline { display: none; }
+
+  .btn { min-height: 0; padding: 5px 10px; font-size: 13px; }
+  .btn-block { margin-top: 6px; }
+  .conv-actions .btn { min-height: 0; }   /* 桌面端不需要手指尺寸 */
+  .side-head { min-height: 0; padding: 2px 0; line-height: 22px; }
+  .conv-item { padding: 5px 22px 5px 8px; font-size: 13px; border-radius: 3px; }
+  .conv-del { width: 16px; height: 16px; line-height: 15px; font-size: 12px; top: 3px; right: 4px; border-radius: 2px; }
+  .msg-body { padding: 8px 10px; border-radius: 4px; background: #fafafa; }
+  .composer-actions .btn { float: right; }
+}
+
+/* ==========================================================================
+ * 深色模式
+ *
+ * 只覆盖颜色，布局与尺寸完全不变，所以不存在把布局改坏的风险。
+ * 没采用 CSS 变量（var()）—— 那样写更短，但 Safari 9.1 / Android 4.4 以下
+ * 不支持，会直接拿到没有颜色的页面。这里用 html.dark 作用域逐条覆盖，
+ * 特异性更高，任何支持基本 CSS 的浏览器都吃。
+ *
+ * 主题类由 <head> 里的内联脚本在首次绘制前就写好（避免先亮后暗的闪烁），
+ * app.js 再按用户选择重新应用一次。
+ * ======================================================================== */
+
+html.light { color-scheme: light; }
+html.dark { color-scheme: dark; }   /* 让现代浏览器把原生控件/滚动条也画成深色 */
+
+html.dark body { background: #16181c; color: #e6e6e6; }
+
+html.dark #topbar { background: #1e2126; border-bottom-color: #33373d; }
+html.dark #menuBtn,
+html.dark #themeBtn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+
+html.dark #sidebar { background: #1b1e23; border-right-color: #33373d; }
+html.dark .brand { background: #23272e; border-bottom-color: #33373d; }
+html.dark .side-block { border-bottom-color: #2c3037; }
+html.dark label,
+html.dark label.chk { color: #a9b0ba; }
+
+html.dark input[type="text"],
+html.dark input[type="password"],
+html.dark select,
+html.dark textarea { background: #23272e; border-color: #454b54; color: #e6e6e6; }
+
+html.dark .btn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+html.dark .btn:active { background: #353b44; }
+html.dark .btn-primary { background: #3b7ddd; border-color: #2f6fd0; color: #fff; }
+html.dark .btn-primary:active { background: #2f6fd0; }
+html.dark .btn-stop { background: #b3352f; border-color: #8e2a25; color: #fff; }
+html.dark .btn[disabled] { background: #23272e; border-color: #33373d; color: #6b7280; }
+
+html.dark .conv-item { background: #23272e; border-color: #383d45; }
+html.dark .conv-item.active { background: #2c4a75; border-color: #4a7fc1; }
+html.dark .conv-del { color: #9aa3ad; }
+html.dark .conv-del:active { color: #f0b3ad; border-color: #6b3a34; background: #3a2320; }
+html.dark .note { color: #8f97a3; }
+
+html.dark #main { background: #16181c; }
+html.dark #messages { background: #16181c; }
+html.dark #composer { background: #1e2126; border-top-color: #33373d; }
+
+html.dark .msg-body { background: #23272e; border-color: #383d45; }
+html.dark .msg.assistant .msg-body { background: #23272e; }
+html.dark .msg.user .msg-body { background: #24334a; border-color: #3b5a86; }
+html.dark .msg.error .msg-body { background: #3a2320; border-color: #6b3a34; color: #f0b3ad; }
+html.dark .msg.pending .msg-body { color: #9aa3ad; }
+html.dark .msg-head { color: #8f97a3; }
+html.dark .empty { color: #8f97a3; }
+html.dark .reasoning { background: #1d2026; border-left-color: #4a5058; color: #9aa3ad; }
+html.dark #toBottom { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+html.dark #overlay { background: rgba(0, 0, 0, 0.6); }
+html.dark .status.err { color: #ff9a92; }
+html.dark .status.ok { color: #8ab4f8; }
+
+/* 输入框占位符：默认颜色是按浅色背景调的，深色下要单独给一套。
+   这里用各家前缀各写一条，避免把 ::placeholder 和前缀选择器写在同一个
+   选择器列表里 —— 老浏览器会因为其中一个不认识而丢掉整条规则。 */
+html.light input::-webkit-input-placeholder,
+html.light textarea::-webkit-input-placeholder { color: #9aa0a8; }
+html.light input::-moz-placeholder,
+html.light textarea::-moz-placeholder { color: #9aa0a8; }
+html.dark input::-webkit-input-placeholder,
+html.dark textarea::-webkit-input-placeholder { color: #7f8794; }
+html.dark input::-moz-placeholder,
+html.dark textarea::-moz-placeholder { color: #7f8794; }
