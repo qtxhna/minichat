@@ -22,6 +22,8 @@
   var SEND_HISTORY_LIMIT = 30;     // 每次发给模型的最近消息条数（省 token）
   var MAX_CONVERSATIONS = 50;      // 本地最多保留的对话数
   var REQUEST_TIMEOUT = 120000;    // 请求超时（毫秒）
+  var STREAM_IDLE_TIMEOUT = 60000; // 流式输出：多久没有新内容就算卡住
+  var STREAM_RENDER_INTERVAL = 120;// 流式输出：最快多少毫秒重画一次气泡
 
   var DEFAULT_SETTINGS = {
     apiKey: "",
@@ -31,7 +33,8 @@
     rememberKey: true,
     theme: "auto",         /* auto | light | dark */
     settingsOpen: null,    /* true/false = 用户手动选过；null = 自动（没填 Key 就展开） */
-    mdEnabled: true        /* 回答用 Markdown 排版 */
+    mdEnabled: true,       /* 回答用 Markdown 排版 */
+    streaming: true        /* 流式输出（边生成边显示） */
   };
 
   /* ----------------------------- 存储层 --------------------------------- */
@@ -95,6 +98,7 @@
   var currentId = null;
   var busy = false;
   var activeXhr = null;
+  var activeRequestCleanup = null;   /* 当前请求的统一收尾函数（含清空闲定时器） */
   var requestAborted = false;
 
   /* ----------------------------- DOM 小工具 ----------------------------- */
@@ -381,6 +385,7 @@
     }
     if (s.settingsOpen !== true && s.settingsOpen !== false) { s.settingsOpen = null; }
     s.mdEnabled = (s.mdEnabled === false) ? false : true;
+    s.streaming = (s.streaming === false) ? false : true;
     return s;
   }
 
@@ -552,7 +557,8 @@
       rememberKey: settings.rememberKey,
       theme: settings.theme,
       settingsOpen: settings.settingsOpen,
-      mdEnabled: settings.mdEnabled
+      mdEnabled: settings.mdEnabled,
+      streaming: settings.streaming
     };
     storeSet(KEY_SETTINGS, JSON.stringify(toSave));
     storeSet(KEY_CURRENT, currentId || "");
@@ -822,6 +828,8 @@
       } else {
         body.appendChild(document.createTextNode(bodyText));
       }
+      /* 正在流式输出的那条，记住节点，之后只重画它一个 */
+      if (m === streamMsg) { streamBody = body; }
       wrap.appendChild(body);
 
       if (m.reasoning) {
@@ -848,6 +856,7 @@
     $("baseUrl").value = settings.baseUrl;
     $("themeSel").value = settings.theme;
     $("mdEnabled").checked = settings.mdEnabled;
+    $("streamEnabled").checked = settings.streaming;
   }
 
   function readFormIntoSettings() {
@@ -859,6 +868,7 @@
     var t = $("themeSel").value;
     if (t === "dark" || t === "light" || t === "auto") { settings.theme = t; }
     settings.mdEnabled = !!$("mdEnabled").checked;
+    settings.streaming = !!$("streamEnabled").checked;
   }
 
   function updateStoreNote() {
@@ -1009,6 +1019,13 @@
 
   function describeHttpError(status, bodyText) {
     var data = jsonParse(bodyText);
+    if (!data && bodyText) {
+      /* 流式输出到一半报错时，body 会是 "data: {...}\n\n{错误JSON}" 这种混合体，
+         整段 parse 会失败。退一步，从最后一个换行后的 { 开始再试一次。 */
+      var p = bodyText.lastIndexOf("\n{");
+      if (p === -1) { p = bodyText.indexOf("{"); }
+      if (p !== -1) { data = jsonParse(trim(bodyText.substring(p))); }
+    }
     var apiMsg = "";
     if (data && data.error && data.error.message) { apiMsg = String(data.error.message); }
     var base;
@@ -1030,26 +1047,117 @@
     return apiMsg ? base + "：" + apiMsg : base;
   }
 
-  /* 用 XMLHttpRequest 调用 /chat/completions（不用 fetch） */
-  function requestChat(messages, onOk, onErr) {
+  /* 用 XMLHttpRequest 调用 /chat/completions（不用 fetch）
+   *
+   * 流式输出只用两样很老的东西：
+   *   - req.onprogress（XHR2，Chrome 10 / Safari 7 就有）
+   *   - readyState === 3 时读 req.responseText，拿增量
+   * 两者任一失效都不会坏：结束后会把整段按非流式再解析一遍（见下面的兜底）。
+   * 全程没有任何 fetch / ReadableStream，老浏览器上语法和 API 都是安全的。 */
+  function requestChat(messages, handlers) {
     var url = settings.baseUrl.replace(/\/+$/, "") + "/chat/completions";
     var req = new XMLHttpRequest();
     var finished = false;
+    var streaming = !!settings.streaming;
+
+    var acc = "";             /* 累积的正文 */
+    var accReasoning = "";    /* 累积的思考过程 */
+    var lineBuf = "";         /* SSE 行缓冲：一块数据可能把一行切断 */
+    var lastLen = 0;          /* responseText 已经消费到的位置 */
+    var seenDelta = false;    /* 是否真的收到过增量 */
+    var sawDone = false;      /* 是否收到过 [DONE] */
+    var sseError = "";        /* SSE 里带回来的错误信息 */
+    var idleTimer = null;
 
     activeXhr = req;
     requestAborted = false;
 
+    /* 统一收尾：标记完成、清掉空闲定时器、断开引用。
+       停止请求时也必须走这里，否则那个 60 秒的空闲定时器会留着，
+       之后触发还会弹一个莫名其妙的"流式响应中断"。 */
+    function settle() {
+      finished = true;
+      stopIdle();
+      activeRequestCleanup = null;
+      activeXhr = null;
+    }
+    activeRequestCleanup = settle;
+
     function fail(text) {
       if (finished) { return; }
-      finished = true;
-      activeXhr = null;
-      onErr(text);
+      settle();
+      handlers.onError(text);
     }
     function done(content, reasoning) {
       if (finished) { return; }
-      finished = true;
-      activeXhr = null;
-      onOk(content, reasoning);
+      settle();
+      handlers.onDone(content, reasoning);
+    }
+
+    /* ---- 空闲超时：流式不能用整体超时，否则长回答会被砍掉 ---- */
+    function stopIdle() {
+      if (idleTimer) { window.clearTimeout(idleTimer); idleTimer = null; }
+    }
+    function resetIdle() {
+      if (!streaming) { return; }
+      stopIdle();
+      idleTimer = window.setTimeout(function () {
+        if (finished) { return; }
+        requestAborted = true;
+        try { req.abort(); } catch (e) { /* 忽略 */ }
+        fail("流式响应中断：超过 " + (STREAM_IDLE_TIMEOUT / 1000) + " 秒没有新内容");
+      }, STREAM_IDLE_TIMEOUT);
+    }
+
+    /* ---- SSE 解析 ---- */
+    function handleSseLine(line) {
+      if (!line || line.charAt(0) === ":") { return; }        /* 空行 / 注释 */
+      if (line.indexOf("data:") !== 0) { return; }            /* 忽略 event: / id: 等 */
+      var payload = trim(line.substring(5));
+      if (!payload) { return; }
+      if (payload === "[DONE]") { sawDone = true; return; }
+      var obj = jsonParse(payload);
+      if (!obj) { return; }
+      if (obj.error && obj.error.message) { sseError = String(obj.error.message); return; }
+      var choice = obj.choices && obj.choices[0] ? obj.choices[0] : null;
+      if (!choice) { return; }
+      var d = choice.delta || {};
+      var c = typeof d.content === "string" ? d.content : "";
+      var r = typeof d.reasoning_content === "string" ? d.reasoning_content : "";
+      if (!c && !r) { return; }
+      seenDelta = true;
+      acc += c;
+      accReasoning += r;
+      handlers.onDelta(c, r);
+    }
+
+    function handleSseChunk(text) {
+      lineBuf += text;
+      var idx;
+      while ((idx = lineBuf.indexOf("\n")) !== -1) {
+        handleSseLine(lineBuf.substring(0, idx).replace(/\r$/, ""));
+        lineBuf = lineBuf.substring(idx + 1);
+      }
+    }
+
+    /* 把 responseText 里新增的部分喂给解析器 */
+    function drain(isFinal) {
+      var full;
+      try {
+        full = req.responseText;
+      } catch (e) {
+        return;                       /* 个别浏览器 readyState=3 时读会抛，忽略即可 */
+      }
+      if (typeof full !== "string" || full.length <= lastLen) { return; }
+      var chunk = full.substring(lastLen);
+      /* 末尾可能是被切断的多字节汉字：先留着，等下一块补齐再消费，
+         否则会永久留下一个 U+FFFD 坏字。 */
+      if (!isFinal && chunk.charAt(chunk.length - 1) === "\ufffd") {
+        chunk = chunk.substring(0, chunk.length - 1);
+        if (!chunk) { return; }
+      }
+      lastLen += chunk.length;
+      handleSseChunk(chunk);
     }
 
     try {
@@ -1061,12 +1169,44 @@
 
     req.setRequestHeader("Content-Type", "application/json");
     req.setRequestHeader("Authorization", "Bearer " + settings.apiKey);
-    if (req.timeout !== undefined) { req.timeout = REQUEST_TIMEOUT; }
+    if (req.timeout !== undefined) {
+      /* 流式靠空闲超时兜底，整体超时会误杀长回答 */
+      req.timeout = streaming ? 0 : REQUEST_TIMEOUT;
+    }
+
+    if (streaming) {
+      /* 两条路径都接上：不同浏览器触发哪个不一样，重复 drain 是幂等的 */
+      req.onprogress = function () {
+        if (finished || requestAborted) { return; }
+        drain(false);
+        resetIdle();
+      };
+      resetIdle();
+    }
 
     req.onreadystatechange = function () {
+      if (req.readyState === 3) {
+        if (finished || requestAborted || !streaming) { return; }
+        drain(false);
+        resetIdle();
+        return;
+      }
       if (req.readyState !== 4) { return; }
       if (requestAborted) { return; }          /* 用户主动停止，由 abort 分支处理 */
+
       if (req.status >= 200 && req.status < 300) {
+        if (streaming) {
+          drain(true);                          /* 收尾，把扣着的最后一个字符也吃掉 */
+          if (seenDelta || sawDone) { done(acc, accReasoning); return; }
+          /* 一个增量都没拿到：可能这个浏览器不吐中间数据，或者接口直接回了整段 JSON。
+             两种情况都在这里兜住 —— 这就是"流式失败自动降级"。 */
+          var d2 = jsonParse(req.responseText);
+          var m2 = d2 && d2.choices && d2.choices[0] ? d2.choices[0].message : null;
+          if (m2) { done(m2.content || "", m2.reasoning_content || ""); return; }
+          if (sseError) { fail("接口返回错误：" + sseError); return; }
+          fail("服务器没有返回回答内容");
+          return;
+        }
         var data = jsonParse(req.responseText);
         if (!data) { fail("无法解析服务器返回的内容"); return; }
         var msg = data.choices && data.choices[0] ? data.choices[0].message : null;
@@ -1094,7 +1234,7 @@
       req.send(JSON.stringify({
         model: settings.model,
         messages: messages,
-        stream: false
+        stream: streaming
       }));
     } catch (e2) {
       fail("发送请求失败：" + (e2 && e2.message ? e2.message : "未知错误"));
@@ -1107,14 +1247,20 @@
     if (activeXhr) {
       try { activeXhr.abort(); } catch (e) { /* 忽略 */ }
     }
+    if (activeRequestCleanup) { activeRequestCleanup(); }   /* 清掉空闲定时器，避免之后误报 */
     activeXhr = null;
     finishWithError("（已停止）");
     setStatus("已停止本次回答");
   }
 
-  /* 把“正在思考”的占位气泡替换成错误/停止提示 */
+  /* 把“正在思考”的占位气泡收尾成 已生成的部分 / 错误 / 已停止 */
   function finishWithError(text) {
     autoScroll = isNearBottom();
+    clearStreamTimers();
+    streamMsg = null;
+    streamBody = null;
+    streamReasoningEl = null;
+
     var conv = getCurrent();
     var i, m;
     for (i = conv.messages.length - 1; i >= 0; i--) {
@@ -1122,9 +1268,15 @@
       if (m.pending) {
         m.pending = false;
         if (text === "（已停止）") {
+          /* 停下来的：已经生成的部分留着（那是用户已经看到的内容） */
           m.role = "assistant";
-          m.content = text;
-          m.skip = true;          /* 只展示，不再作为后续上下文 */
+          m.content = m.content ? (m.content + "\n\n（已停止）") : text;
+          m.skip = true;          /* 半截内容不再作为后续上下文 */
+        } else if (m.content) {
+          /* 流到一半出错：已生成的部分也留着，错误附在后面 */
+          m.role = "assistant";
+          m.content = m.content + "\n\n" + text;
+          m.skip = true;
         } else {
           m.role = "error";
           m.content = text;
@@ -1162,46 +1314,111 @@
     addMessage(conv, "user", text, "");
     input.value = "";
     addMessage(conv, "assistant", "", "");
-    conv.messages[conv.messages.length - 1].pending = true;
+    var target = conv.messages[conv.messages.length - 1];
+    target.pending = true;
+    streamMsg = target;                   /* 流式期间直接改这一个气泡，不整屏重画 */
 
     autoScroll = true;                    /* 自己发的消息，一定跟到底部 */
     renderMessages();
     renderConvList();
     persistConversations();
     setBusy(true);
-    setStatus("正在等待回答…");
+    setStatus(settings.streaming ? "正在生成…" : "正在等待回答…");
 
     var payload = buildPayload(conv);
     /* 去掉刚刚插入的空占位（buildPayload 已自动忽略空内容，这里再保险一次） */
     var last = payload.length ? payload[payload.length - 1] : null;
     if (last && last.role === "assistant" && !last.content) { payload.pop(); }
 
-    requestChat(payload, function (content, reasoning) {
-      /* 先看用户此刻是不是在底部，再改数据：翻历史时不要把他拽下来 */
-      autoScroll = isNearBottom();
-      var c = getCurrent();
-      var i, m, target = null;
-      for (i = c.messages.length - 1; i >= 0; i--) {
-        if (c.messages[i].pending) { target = c.messages[i]; break; }
+    var gotFirstDelta = false;
+
+    requestChat(payload, {
+      /* 每来一小段就更新一次气泡（内部节流，不会每字都重画） */
+      onDelta: function (contentDelta, reasoningDelta) {
+        if (!gotFirstDelta) {
+          gotFirstDelta = true;
+          setStatus("");                  /* 文字开始长出来了，就不用再提示"正在生成" */
+        }
+        if (contentDelta) { target.content += contentDelta; }
+        if (reasoningDelta) { target.reasoning += reasoningDelta; }
+        scheduleStreamRender();
+      },
+
+      onDone: function (content, reasoning) {
+        autoScroll = isNearBottom();
+        clearStreamTimers();
+        streamMsg = null;
+        streamBody = null;
+        streamReasoningEl = null;
+
+        if (target.pending) {
+          target.pending = false;
+          target.content = content || target.content || "（模型返回了空内容）";
+          target.reasoning = reasoning || target.reasoning || "";
+          target.ts = nowMs();
+        }
+        setBusy(false);
+        persistConversations();
+        renderMessages();
+        renderConvList();
+        setStatus("");
+      },
+
+      onError: function (errText) {
+        clearStreamTimers();
+        finishWithError(errText);
+        setStatus(errText, true);
       }
-      if (!target) {
-        m = addMessage(c, "assistant", content, reasoning);
-        target = m;
-      } else {
-        target.pending = false;
-        target.content = content || "（模型返回了空内容）";
-        target.reasoning = reasoning || "";
-        target.ts = nowMs();
-      }
-      setBusy(false);
-      persistConversations();
-      renderMessages();
-      renderConvList();
-      setStatus("");
-    }, function (errText) {
-      finishWithError(errText);
-      setStatus(errText, true);
     });
+  }
+
+  /* --------- 流式输出时的局部刷新（只重画正在生成的那一个气泡）--------- */
+
+  var streamMsg = null;          /* 正在流式输出的那条消息对象 */
+  var streamBody = null;         /* 它的 .msg-body 节点 */
+  var streamReasoningEl = null;  /* 它的思考过程节点（可能没有） */
+  var streamTimer = null;
+
+  function clearStreamTimers() {
+    if (streamTimer) { window.clearTimeout(streamTimer); streamTimer = null; }
+  }
+
+  /* 节流：一秒钟最多重画几次，老设备也不吃力 */
+  function scheduleStreamRender() {
+    if (streamTimer) { return; }
+    streamTimer = window.setTimeout(function () {
+      streamTimer = null;
+      renderStreamTick();
+    }, STREAM_RENDER_INTERVAL);
+  }
+
+  function renderStreamTick() {
+    if (!streamMsg || !streamBody) { return; }
+    var stick = isNearBottom();      /* 改内容前先看用户在不在底部 */
+    var text = streamMsg.content;
+
+    /* 重画这一个气泡：清空子节点再填 */
+    while (streamBody.firstChild) { streamBody.removeChild(streamBody.firstChild); }
+    if (settings.mdEnabled && text) {
+      streamBody.className = "msg-body md";
+      mdAppendBlocks(streamBody, text);
+    } else {
+      streamBody.className = "msg-body";
+      streamBody.appendChild(document.createTextNode(text));
+    }
+
+    /* 思考过程（deepseek-reasoner）边走边显示 */
+    if (streamMsg.reasoning) {
+      if (!streamReasoningEl || !streamReasoningEl.parentNode) {
+        streamReasoningEl = el("div", "reasoning");
+        if (streamBody.parentNode) { streamBody.parentNode.appendChild(streamReasoningEl); }
+      }
+      while (streamReasoningEl.firstChild) { streamReasoningEl.removeChild(streamReasoningEl.firstChild); }
+      streamReasoningEl.appendChild(document.createTextNode("思考过程：\n" + streamMsg.reasoning));
+    }
+
+    if (stick) { scrollToBottom(); }
+    updateToBottom();
   }
 
   /* 手机键盘没有 Shift+Enter，用它插入换行 */
@@ -1247,6 +1464,11 @@
       persistSettings();
       autoScroll = isNearBottom();
       renderMessages();
+    };
+    /* 流式开关：下次发送生效（不影响正在进行的回答） */
+    $("streamEnabled").onchange = function () {
+      settings.streaming = !!$("streamEnabled").checked;
+      persistSettings();
     };
     bindSystemTheme();
 

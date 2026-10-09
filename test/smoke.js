@@ -47,7 +47,7 @@ var byId = {};
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
- "mdEnabled"].forEach(function (id) { byId[id] = makeEl("div"); });
+ "mdEnabled", "streamEnabled"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
 metaTheme.setAttribute("name", "theme-color");
@@ -96,6 +96,20 @@ XHR.prototype.send = function (b) { this.body = b; };
 XHR.prototype.abort = function () { this.aborted = true; };
 XHR.prototype.respond = function (status, text) {
   this.status = status; this.responseText = text; this.readyState = 4;
+  if (this.onreadystatechange) { this.onreadystatechange(); }
+};
+/* 模拟流式：数据分块到达（readyState 3 + onprogress） */
+XHR.prototype.chunk = function (text) {
+  this.responseText += text;
+  this.readyState = 3;
+  if (this.onprogress) { this.onprogress(); }
+  if (this.onreadystatechange) { this.onreadystatechange(); }
+};
+/* 模拟流式收尾 */
+XHR.prototype.finish = function (status, text) {
+  if (text !== undefined) { this.responseText += text; }
+  this.status = status;
+  this.readyState = 4;
   if (this.onreadystatechange) { this.onreadystatechange(); }
 };
 
@@ -213,7 +227,7 @@ check("URL 去掉了末尾斜杠", lastXhr.url === "https://api.deepseek.com/cha
 check("使用 POST", lastXhr.method === "POST");
 check("带 Authorization 头", lastXhr.headers["Authorization"] === "Bearer sk-test-123", lastXhr.headers["Authorization"]);
 var sent = JSON.parse(lastXhr.body);
-check("stream=false", sent.stream === false);
+check("默认就请求流式输出", sent.stream === true, String(sent.stream));
 check("model 正确", sent.model === "deepseek-reasoner");
 check("首条为 system", sent.messages[0].role === "system" && sent.messages[0].content === "你是简洁的助手");
 check("末条为 user", sent.messages[sent.messages.length - 1].role === "user");
@@ -590,6 +604,115 @@ check("用户消息保持原样", kidsRepr(allMsgs[allMsgs.length - 2].childNode
   kidsRepr(allMsgs[allMsgs.length - 2].childNodes[1]));
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
 
-console.log("\n=========================================");
-if (failures.length) { console.log("失败项 " + failures.length + " 个: " + failures.join(" | ")); process.exit(1); }
-console.log("全部通过");
+console.log("\n[16] 流式输出");
+lsData = {};
+lsQuota = 5 * 1024 * 1024;
+global.window.localStorage = localStorage;
+window.matchMedia = function (q) { return { matches: false, media: q, addListener: function () {}, addEventListener: function () {} }; };
+loadApp();
+byId.apiKey.value = "sk-stream";
+byId.saveSettings.onclick();
+check("默认开启流式", byId.streamEnabled.checked === true && JSON.parse(lsData["minichat.settings.v1"]).streaming === true);
+
+byId.input.value = "讲个长的";
+byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+var req16 = lastXhr;
+check("请求体里带上了 stream:true", JSON.parse(req16.body).stream === true);
+check("流式时用空闲超时而不是整体超时（否则长回答会被砍）", req16.timeout === 0, String(req16.timeout));
+var wrap16 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+check("开始前先显示「正在思考…」", kidsRepr(wrap16.childNodes[1]) === "正在思考…", kidsRepr(wrap16.childNodes[1]));
+
+req16.chunk("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想想\"}}]}\n");
+req16.chunk("\ndata: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n");
+req16.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n");
+/* 故意把一行切断，验证行缓冲 */
+req16.chunk("data: {\"choices\":[{\"delta\":{\"con");
+req16.chunk("tent\":\"世界\"}}]}\n\n");
+
+/* 流式渲染是节流的，等一拍再断言中间态 */
+window.setTimeout(function () {
+
+  var w = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("流式过程中正文已经在气泡里长出来", textOf(w.childNodes[1]).indexOf("你好") > -1, textOf(w.childNodes[1]));
+  check("思考过程也边生成边显示",
+    w.childNodes.length === 3 && textOf(w.childNodes[2]).indexOf("先想想") > -1,
+    w.childNodes.length + " 个子节点");
+
+  req16.chunk("data: [DONE]\n");
+  req16.finish(200);
+  var wf = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("结束后内容完整（含被切断那一行）", textOf(wf.childNodes[1]).indexOf("你好世界") > -1, textOf(wf.childNodes[1]));
+  check("结束后不再是 pending 样子", wf.className.indexOf("pending") === -1, wf.className);
+  check("按钮恢复为发送", byId.send.childNodes[0].textContent === "发送");
+  check("流式结果已落盘", /你好世界/.test(lsData["minichat.conversations.v1"] || ""));
+
+  /* 降级 1：浏览器一个增量都不给，接口回整段 JSON（比如代理不支持流式） */
+  byId.input.value = "降级 1";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "整段回来的回答" } }] }));
+  var d1 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("收不到增量时自动按非流式解析", textOf(d1.childNodes[1]) === "整段回来的回答", textOf(d1.childNodes[1]));
+
+  /* 降级 2：增量一直没给，直到收尾才拿到完整的 SSE */
+  byId.input.value = "降级 2";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.finish(200, "data: {\"choices\":[{\"delta\":{\"content\":\"缓存到\"}}]}\n\n" +
+                      "data: {\"choices\":[{\"delta\":{\"content\":\"最后\"}}]}\n\ndata: [DONE]\n\n");
+  var d2 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("整段 SSE 也能在收尾时补解析出来", textOf(d2.childNodes[1]) === "缓存到最后", textOf(d2.childNodes[1]));
+
+  /* 多字节汉字被分块切断：末尾的 U+FFFD 先扣住不消费 */
+  byId.input.value = "断字";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var req17 = lastXhr;
+  req17.responseText = "data: {\"choices\":[{\"delta\":{\"content\":\"中\ufffd";
+  req17.readyState = 3;
+  req17.onprogress();
+  /* 模拟浏览器随后把那个字补全：同一位置变成正确的字 */
+  req17.responseText = "data: {\"choices\":[{\"delta\":{\"content\":\"中文\"}}]}\n\n";
+  req17.onprogress();
+  req17.finish(200);
+  var d3 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("被切断的多字节字符不会留下乱码", textOf(d3.childNodes[1]) === "中文", textOf(d3.childNodes[1]));
+
+  /* 流到一半报错：已生成的部分要保留 */
+  byId.input.value = "中途出错";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"已经写了一半\"}}]}\n\n");
+  lastXhr.finish(402, "{\"error\":{\"message\":\"Insufficient Balance\"}}");
+  var d4 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  var t4 = textOf(d4.childNodes[1]);
+  check("中途出错保留已生成内容", t4.indexOf("已经写了一半") > -1, t4);
+  check("并在后面附上错误原因", t4.indexOf("402") > -1 && t4.indexOf("Insufficient Balance") > -1, t4);
+
+  /* 停止：保留已经生成的部分 */
+  byId.input.value = "要停的";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"半截话\"}}]}\n\n");
+  byId.send.onclick();                       /* 正在忙 → 触发停止 */
+  var d5 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  var t5 = textOf(d5.childNodes[1]);
+  check("停止后保留已生成内容并作标注", t5.indexOf("半截话") > -1 && t5.indexOf("已停止") > -1, t5);
+  check("停止后按钮恢复", byId.send.childNodes[0].textContent === "发送");
+
+  /* 关掉流式：回到原来的整体超时 + 非流式解析 */
+  byId.streamEnabled.checked = false;
+  byId.streamEnabled.onchange();
+  byId.input.value = "非流式";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  check("关掉后请求 stream:false", JSON.parse(lastXhr.body).stream === false);
+  check("关掉后恢复整体超时", lastXhr.timeout === 120000, String(lastXhr.timeout));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "非流式回答" } }] }));
+  var d6 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("非流式路径正常", textOf(d6.childNodes[1]) === "非流式回答", textOf(d6.childNodes[1]));
+  check("流式开关状态已落盘", JSON.parse(lsData["minichat.settings.v1"]).streaming === false);
+
+  report();
+}, 300);
+
+function report() {
+  console.log("\n=========================================");
+  if (failures.length) { console.log("失败项 " + failures.length + " 个: " + failures.join(" | ")); process.exit(1); }
+  console.log("全部通过");
+  process.exit(0);   /* 主动退出：setStatus 的自动消失定时器还在排队，不必等它 */
+}
