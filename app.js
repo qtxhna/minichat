@@ -580,6 +580,57 @@
   var MD_HR_RE = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
   var MD_QUOTE_RE = /^\s*>/;
 
+  /* 表格每列的最小宽度（em）。列数 × 这个值 超过气泡宽度时就横向滚动。
+     5 意味着：4 列以内手机上仍挤得下（走折行适配），5 列起开始横滑。 */
+  var TABLE_COL_MIN_EM = 5;
+
+  /* ---- 表格相关 ---- */
+
+  /* 拆一行：去掉首尾的 |，\| 视为转义的竖线（先换成占位符再切） */
+  function mdSplitRow(line) {
+    var s = trim(line);
+    if (s.charAt(0) === "|") { s = s.substring(1); }
+    if (s.charAt(s.length - 1) === "|") { s = s.substring(0, s.length - 1); }
+    s = s.replace(/\\\|/g, "\u0000");
+    var parts = s.split("|");
+    var out = [];
+    var i;
+    for (i = 0; i < parts.length; i++) {
+      out.push(trim(parts[i].replace(/\u0000/g, "|")));
+    }
+    return out;
+  }
+
+  /* |:--|--:|:-:| 里的对齐标记 */
+  function mdAlignOf(cell) {
+    var t = trim(cell);
+    var left = t.charAt(0) === ":";
+    var right = t.charAt(t.length - 1) === ":";
+    if (left && right) { return "center"; }
+    if (right) { return "right"; }
+    return "";                       /* 默认左对齐 */
+  }
+
+  function mdIsDelimiterRow(line) {
+    if (trim(line) === "") { return false; }
+    var cells = mdSplitRow(line);
+    if (!cells.length) { return false; }
+    var i;
+    for (i = 0; i < cells.length; i++) {
+      if (!/^:?-+:?$/.test(trim(cells[i]))) { return false; }
+    }
+    return true;
+  }
+
+  /* 表格开始的判据：本行含 |，下一行是分隔行且也含 |
+     （要求分隔行带 | 是为了不把 "标题\n---" 这种 setext 写法误判成表格） */
+  function mdIsTableStart(lines, i) {
+    if (i + 1 >= lines.length) { return false; }
+    if (lines[i].indexOf("|") === -1) { return false; }
+    if (lines[i + 1].indexOf("|") === -1) { return false; }
+    return mdIsDelimiterRow(lines[i + 1]);
+  }
+
   /* 只允许 http/https/mailto；javascript:、data: 之类一律不生成链接 */
   function mdSafeHref(url) {
     var u = trim(String(url || ""));
@@ -648,7 +699,7 @@
   function mdParseBlocks(text) {
     var lines = String(text).replace(/\r\n?/g, "\n").split("\n");
     var blocks = [];
-    var i = 0, line, m, buf, items, closeRe;
+    var i = 0, k, line, m, buf, items, closeRe;
 
     while (i < lines.length) {
       line = lines[i];
@@ -719,15 +770,32 @@
         continue;
       }
 
+      /* 表格：本行含 | 且下一行是分隔行（| --- | :--: |） */
+      if (mdIsTableStart(lines, i)) {
+        var headCells = mdSplitRow(lines[i]);
+        var alignCells = mdSplitRow(lines[i + 1]);
+        var aligns = [];
+        for (k = 0; k < headCells.length; k++) { aligns.push(mdAlignOf(alignCells[k])); }
+        i += 2;
+        var bodyRows = [];
+        while (i < lines.length && trim(lines[i]) !== "" && lines[i].indexOf("|") !== -1) {
+          bodyRows.push(mdSplitRow(lines[i]));
+          i++;
+        }
+        blocks.push({ type: "table", head: headCells, aligns: aligns, rows: bodyRows });
+        continue;
+      }
+
       /* 剩下的是段落：一直吃到空行或下一个块级结构 */
       buf = [];
-      while (i < lines.length &&
-             trim(lines[i]) !== "" &&
-             !MD_FENCE_RE.test(lines[i]) &&
-             !MD_QUOTE_RE.test(lines[i]) &&
-             !MD_BULLET_RE.test(lines[i]) &&
-             !MD_ORDERED_RE.test(lines[i]) &&
-             !MD_HEADING_RE.test(lines[i])) {
+      while (i < lines.length) {
+        if (trim(lines[i]) === "") { break; }
+        if (MD_FENCE_RE.test(lines[i])) { break; }
+        if (MD_QUOTE_RE.test(lines[i])) { break; }
+        if (MD_BULLET_RE.test(lines[i])) { break; }
+        if (MD_ORDERED_RE.test(lines[i])) { break; }
+        if (MD_HEADING_RE.test(lines[i])) { break; }
+        if (mdIsTableStart(lines, i)) { break; }
         buf.push(lines[i]);
         i++;
       }
@@ -740,6 +808,7 @@
   function mdAppendBlocks(container, text) {
     var blocks = mdParseBlocks(text);
     var i, k, b, node, li, codeEl;
+    var twrap, table, thead, tbody, tr, th, td, row, cellText;
     for (i = 0; i < blocks.length; i++) {
       b = blocks[i];
       if (b.type === "code") {
@@ -758,6 +827,45 @@
         node = document.createElement("blockquote");
         mdAppendInline(node, b.text);
         container.appendChild(node);
+      } else if (b.type === "table") {
+        /* 外面套一层可横向滚动的壳。以前表格是 width:100%，永远缩到气泡宽度，
+           这层壳等于没用；现在按列数给表格一个最小宽度，列多了自然会超出气泡，
+           横向滚动才真的能滚起来。 */
+        twrap = document.createElement("div");
+        twrap.className = "md-table-wrap";
+        table = document.createElement("table");
+        /* 每列至少 5em：4 列以内手机上还挤得下（保持折行适配），
+           5 列以上就会超出气泡宽度，从而触发横向滚动。
+           调整 TABLE_COL_MIN_EM 就能改"多少列开始横滑"。 */
+        table.style.minWidth = (b.head.length * TABLE_COL_MIN_EM) + "em";
+
+        thead = document.createElement("thead");
+        tr = document.createElement("tr");
+        for (k = 0; k < b.head.length; k++) {
+          th = document.createElement("th");
+          if (b.aligns[k]) { th.style.textAlign = b.aligns[k]; }
+          mdAppendInline(th, b.head[k]);
+          tr.appendChild(th);
+        }
+        thead.appendChild(tr);
+        table.appendChild(thead);
+
+        tbody = document.createElement("tbody");
+        for (var r = 0; r < b.rows.length; r++) {
+          row = b.rows[r];
+          tr = document.createElement("tr");
+          for (k = 0; k < b.head.length; k++) {        /* 以表头列数为准，多退少补 */
+            td = document.createElement("td");
+            if (b.aligns[k]) { td.style.textAlign = b.aligns[k]; }
+            cellText = row[k] === undefined ? "" : row[k];
+            mdAppendInline(td, cellText);
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        twrap.appendChild(table);
+        container.appendChild(twrap);
       } else if (b.type === "ul" || b.type === "ol") {
         node = document.createElement(b.type);
         for (k = 0; k < b.items.length; k++) {
@@ -770,6 +878,54 @@
         node = document.createElement("p");
         mdAppendInline(node, b.text);
         container.appendChild(node);
+      }
+    }
+  }
+
+  /* ------------------- 表格能不能横滑：提示的显示与撤除 ------------------- */
+  /* 这件事只能在"布局已经算好之后"做。实测在 DOMContentLoaded 里读
+     offsetWidth 会得到 0（那时还没有布局），所以放在 load / 渲染后延时 / 尺寸变化时。 */
+
+  var tableHintTimer = null;
+
+  function scheduleTableHints() {
+    if (tableHintTimer) { return; }
+    tableHintTimer = window.setTimeout(function () {
+      tableHintTimer = null;
+      refreshTableHints();
+    }, 60);
+  }
+
+  function refreshTableHints() {
+    var box = $("messages");
+    if (!box || !box.getElementsByTagName) { return; }
+
+    /* 先取一份快照：下面会往文档里插/删提示节点，边遍历边改会漏项 */
+    var found = [], divs = box.getElementsByTagName("div"), i;
+    for (i = 0; i < divs.length; i++) {
+      if (divs[i].className && divs[i].className.indexOf("md-table-wrap") !== -1) {
+        found.push(divs[i]);
+      }
+    }
+
+    for (i = 0; i < found.length; i++) {
+      var w = found[i];
+      var t = w.firstChild;
+      if (!t) { continue; }
+      var need = w.clientWidth > 0 && t.offsetWidth > w.clientWidth + 1;
+      var nxt = w.nextSibling;
+      var has = !!(nxt && nxt.className === "md-table-hint");
+
+      if (need && !has) {
+        var hint = document.createElement("div");
+        hint.className = "md-table-hint";
+        hint.appendChild(document.createTextNode("← 可左右滚动 →"));
+        if (w.parentNode) { w.parentNode.insertBefore(hint, w.nextSibling || null); }
+        w.className = "md-table-wrap md-table-scroll";
+      } else if (!need && has) {
+        /* 变宽了（横屏、桌面）就别再挂着提示 */
+        if (nxt.parentNode) { nxt.parentNode.removeChild(nxt); }
+        w.className = "md-table-wrap";
       }
     }
   }
@@ -846,6 +1002,7 @@
     if (autoScroll) { scrollToBottom(); }
     autoScroll = false;
     updateToBottom();
+    scheduleTableHints();       /* 表格要不要横滑，得等布局算完 */
   }
 
   function syncFormFromSettings() {
@@ -1478,12 +1635,19 @@
       updateToBottom();
     };
 
+    /* 页面完全加载后再判一次：DOMContentLoaded 时还没有布局，量出来是 0 */
+    window.onload = function () {
+      refreshTableHints();
+      syncHeaderSpace();
+    };
+
     /* 页面滚动（移动端）时决定「回到底部」按钮显示与否 */
     window.onscroll = updateToBottom;
     window.onresize = function () {
       closeDrawer();
       syncHeaderSpace();
       updateToBottom();
+      refreshTableHints();      /* 横竖屏 / 窗口变化后，能横滑的表格可能变了 */
     };
     if ("onorientationchange" in window) {
       window.onorientationchange = function () {

@@ -16,11 +16,21 @@ function makeEl(tag) {
     scrollHeight: 500,
     offsetHeight: 40,
     clientHeight: 400,
+    clientWidth: 400,
     selectionStart: 0,
     selectionEnd: 0,
     parentNode: null,
     _html: "",
     appendChild: function (c) { c.parentNode = node; node.childNodes.push(c); return c; },
+    insertBefore: function (c, ref) {
+      c.parentNode = node;
+      var at = node.childNodes.length;
+      for (var i = 0; i < node.childNodes.length; i++) {
+        if (node.childNodes[i] === ref) { at = i; break; }
+      }
+      node.childNodes.splice(at, 0, c);
+      return c;
+    },
     removeChild: function (c) {
       for (var i = 0; i < node.childNodes.length; i++) {
         if (node.childNodes[i] === c) { node.childNodes.splice(i, 1); break; }
@@ -29,11 +39,42 @@ function makeEl(tag) {
     },
     setAttribute: function (k, v) { node.attrs[k] = String(v); },
     getAttribute: function (k) { return Object.prototype.hasOwnProperty.call(node.attrs, k) ? node.attrs[k] : null; },
+    getElementsByTagName: function (tag) {
+      var out = [], i, j, kids;
+      for (i = 0; i < node.childNodes.length; i++) {
+        if (node.childNodes[i].nodeType === 3) { continue; }
+        if (node.childNodes[i].tagName === tag) { out.push(node.childNodes[i]); }
+        if (node.childNodes[i].getElementsByTagName) {
+          kids = node.childNodes[i].getElementsByTagName(tag);
+          for (j = 0; j < kids.length; j++) { out.push(kids[j]); }
+        }
+      }
+      return out;
+    },
     focus: function () {},
     onclick: null,
     onkeydown: null
   };
   Object.defineProperty(node, "firstChild", { get: function () { return node.childNodes[0] || null; } });
+  Object.defineProperty(node, "nextSibling", {
+    get: function () {
+      if (!node.parentNode) { return null; }
+      var sib = node.parentNode.childNodes;
+      for (var i = 0; i < sib.length; i++) {
+        if (sib[i] === node) { return sib[i + 1] || null; }
+      }
+      return null;
+    }
+  });
+  /* 表格的"实际宽度"用 global.__stubTableWidth 动态模拟：
+     真实浏览器里 offsetWidth 是随布局实时算出来的，不是建好就定死。 */
+  if (tag === "table") {
+    Object.defineProperty(node, "offsetWidth", {
+      get: function () {
+        return (typeof global.__stubTableWidth === "number") ? global.__stubTableWidth : 40;
+      }
+    });
+  }
   Object.defineProperty(node, "innerHTML", {
     get: function () { return node._html; },
     set: function (v) { node._html = String(v); if (v === "") { node.childNodes = []; } }
@@ -579,6 +620,71 @@ var body6 = renderAssistant("![图片](https://example.com/a.png)");
 check("图片不会被真的加载（只是链接）", !hasTag(body6, "img") && hasTag(body6, "a"), repr(body6));
 check("链接带 https 地址", body6.childNodes[0].childNodes[0].attrs.href === "https://example.com/a.png",
   body6.childNodes[0].childNodes[0].attrs.href);
+
+/* ---- 表格 ---- */
+var tb1 = mdRepr("| 算法 | 复杂度 |\n| --- | --- |\n| 冒泡 | O(n²) |");
+check("表格：基本结构", tb1 === "div.md-table-wrap(table(thead(tr(th(算法),th(复杂度))),tbody(tr(td(冒泡),td(O(n²))))))", tb1);
+
+var tb2 = mdRepr("a | b\n--- | ---\n1 | 2");
+check("表格：两侧不写竖线也认", tb2 === "div.md-table-wrap(table(thead(tr(th(a),th(b))),tbody(tr(td(1),td(2)))))", tb2);
+
+var tb3 = renderAssistant("| a | b | c |\n| :-- | --: | :-: |\n| 1 | 2 | 3 |");
+var rowCells = tb3.childNodes[0].childNodes[0].childNodes[1].childNodes[0];
+check("表格：右对齐生效", rowCells.childNodes[1].style.textAlign === "right", String(rowCells.childNodes[1].style.textAlign));
+check("表格：居中生效", rowCells.childNodes[2].style.textAlign === "center", String(rowCells.childNodes[2].style.textAlign));
+check("表格：左对齐不写死样式", !rowCells.childNodes[0].style.textAlign, String(rowCells.childNodes[0].style.textAlign));
+
+var tb4 = mdRepr("| a \\| b | c |\n| --- | --- |\n| 1 | 2 |");
+check("表格：单元格里的转义竖线", tb4.indexOf("th(a | b)") > -1, tb4);
+
+var tb5 = mdRepr("| **粗** | `code` |\n| --- | --- |\n| [链接](https://a.com) | x |");
+check("表格：单元格里支持行内语法",
+  tb5.indexOf("th(strong(粗))") > -1 && tb5.indexOf("th(code(code))") > -1 && tb5.indexOf("td(a[https://a.com](链接))") > -1, tb5);
+
+var tb6 = mdRepr("| a | b |\n| --- | --- |\n| 只有一格 |\n| 1 | 2 | 多出来的 |");
+check("表格：列数不齐也不崩（多退少补）",
+  tb6.indexOf("tr(td(只有一格),td)") > -1 && tb6.indexOf("tr(td(1),td(2)))") > -1 && tb6.indexOf("多出来的") === -1, tb6);
+
+var tb7 = mdRepr("这是一段话 | 里面有竖线");
+check("有竖线但没有分隔行 → 还是段落", tb7 === "p(这是一段话 | 里面有竖线)", tb7);
+
+var tb8 = mdRepr("| a |\n| --- |\n| <script>alert(1)</script> |");
+check("表格：单元格里的脚本标签只是文字", tb8.indexOf("<script>alert(1)</script>") > -1, tb8);
+
+var tb9 = mdRepr("先来一段说明\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n表格后面还有一段");
+check("表格前后都能正常接段落",
+  tb9.indexOf("p(先来一段说明)") === 0 && tb9.indexOf("p(表格后面还有一段)") > -1, tb9);
+
+/* ---- 表格横向滚动：列数决定最小宽度，真的超出容器才横滑并给提示 ---- */
+var mw2 = renderAssistant("| a | b |\n| --- | --- |\n| 1 | 2 |");
+var tbl2 = mw2.childNodes[0].childNodes[0];
+check("2 列：最小宽度 = 2×5em", tbl2.style.minWidth === "10em", String(tbl2.style.minWidth));
+check("2 列：放得下就不加滚动提示", mw2.childNodes.length === 1, mw2.childNodes.length + " 块");
+
+var mw6 = renderAssistant("| a | b | c | d | e | f |\n| --- | --- | --- | --- | --- | --- |\n| 1 | 2 | 3 | 4 | 5 | 6 |");
+var tbl6b = mw6.childNodes[0].childNodes[0];
+check("6 列：最小宽度 = 6×5em", tbl6b.style.minWidth === "30em", String(tbl6b.style.minWidth));
+
+/* 模拟"表格确实比容器宽"（真实浏览器里由 min-width 造成） */
+global.__stubTableWidth = 999;
+var mwS = renderAssistant("| a | b |\n| --- | --- |\n| 1 | 2 |");
+check("渲染时不急着加提示（那一刻还没布局）", mwS.childNodes.length === 1, mwS.childNodes.length + " 块");
+window.onload();                                   /* 布局完成后由 load 触发判定 */
+check("真的滚得动：外壳加上 class", mwS.childNodes[0].className.indexOf("md-table-scroll") > -1, mwS.childNodes[0].className);
+check("真的滚得动：紧跟表格给出提示",
+  mwS.childNodes.length === 2 &&
+  mwS.childNodes[1].className === "md-table-hint" &&
+  textOf(mwS.childNodes[1]).indexOf("左右滚动") > -1,
+  mwS.childNodes.length + " 块");
+check("提示排在表格后面而不是消息末尾",
+  mwS.childNodes[0].childNodes[0].tagName === "table" && mwS.childNodes[1].className === "md-table-hint");
+
+/* 窗口变宽后（横屏/桌面），提示必须撤掉 */
+global.__stubTableWidth = 40;
+window.onload();
+check("放得下之后提示会被撤掉",
+  mwS.childNodes.length === 1 && mwS.childNodes[0].className === "md-table-wrap",
+  mwS.childNodes.length + " 块 / " + mwS.childNodes[0].className);
 
 /* 病态输入不能把解析器卡死（量词都带下界） */
 var t0 = Date.now();

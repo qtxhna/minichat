@@ -310,7 +310,7 @@ textarea { resize: none; }
 .msg-body.md { white-space: normal; }   /* 排版模式下换行交给 <p>/<br>，不再靠 pre-wrap */
 
 .msg-body.md p { margin: 0 0 8px 0; }
-.msg-body.md p:last-child { margin-bottom: 0; }
+.msg-body.md > *:last-child { margin-bottom: 0; }   /* 最后一个块不要多留一段下边距 */
 
 .msg-body.md h1, .msg-body.md h2, .msg-body.md h3,
 .msg-body.md h4, .msg-body.md h5, .msg-body.md h6 {
@@ -356,6 +356,39 @@ textarea { resize: none; }
 .msg-body.md a { color: #2f6fd0; }
 .msg-body.md hr { border: none; border-top: 1px solid #dcdcdc; margin: 10px 0; }
 .msg-body.md del { color: #888; }
+
+/* 表格：外层壳负责横向滚动。表格 width:100% 保证少列时铺满；
+   列数多的时候由 JS 按列数设的 min-width 把它撑得比气泡宽，滚动才真的生效。 */
+.msg-body.md .md-table-wrap {
+  margin: 0 0 8px 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* 真测出来滚得动，才会由 JS 加这个 class 和一条提示 */
+.msg-body.md .md-table-hint {
+  font-size: 11px;
+  color: #999;
+  margin: -4px 0 8px 0;
+}
+.msg-body.md table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 14px;
+}
+.msg-body.md th,
+.msg-body.md td {
+  border: 1px solid #dcdcdc;
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+/* 表头不允许折行：否则列一多，"算法"会被拆成两行一个字，看着像坏了。
+   表头因此可能把表格撑宽，那时由外面那层壳横向滚动兜住。
+   （单元格本身仍可折行；在单元格上写 min-width 是没用的，表格布局算法会忽略它。） */
+.msg-body.md th { background: #f0f1f3; font-weight: bold; white-space: nowrap; }
 
 /* 「回到底部」浮动按钮（仅移动端，滚动离底部较远时出现） */
 #toBottom {
@@ -537,6 +570,10 @@ html.dark .reasoning { background: #1d2026; border-left-color: #4a5058; color: #
 html.dark .msg-body.md pre { background: #1d2026; border-color: #3a3f47; }
 html.dark .msg-body.md code { background: #2f343c; }
 html.dark .msg-body.md pre code { background: none; }
+html.dark .msg-body.md th,
+html.dark .msg-body.md td { border-color: #3a3f47; }
+html.dark .msg-body.md th { background: #2a2f36; }
+html.dark .msg-body.md .md-table-hint { color: #8f97a3; }
 html.dark .msg-body.md blockquote { border-left-color: #4a5058; color: #9aa3ad; }
 html.dark .msg-body.md a { color: #8ab4f8; }
 html.dark .msg-body.md hr { border-top-color: #3a3f47; }
