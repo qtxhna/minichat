@@ -813,6 +813,112 @@ window.setTimeout(function () {
   check("非流式路径正常", textOf(d6.childNodes[1]) === "非流式回答", textOf(d6.childNodes[1]));
   check("流式开关状态已落盘", JSON.parse(lsData["minichat.settings.v1"]).streaming === false);
 
+  console.log("\n[17] 请求前缀稳定（决定上下文缓存命中率）");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  window.matchMedia = function (q) { return { matches: false, media: q, addListener: function () {}, addEventListener: function () {} }; };
+  loadApp();
+  byId.apiKey.value = "sk-cache";
+  byId.saveSettings.onclick();
+  byId.streamEnabled.checked = false;
+  byId.streamEnabled.onchange();
+
+  function msgsOf(xhr) { return JSON.parse(xhr.body).messages; }
+  /* A 是不是 B 的前缀？缓存只在“这一轮请求 = 上一轮请求 + 尾部新增”时才命中 */
+  function isPrefix(a, b) {
+    if (a.length > b.length) { return false; }
+    var k;
+    for (k = 0; k < a.length; k++) {
+      if (a[k].role !== b[k].role || a[k].content !== b[k].content) { return false; }
+    }
+    return true;
+  }
+  function ask17(text) {
+    byId.input.value = text;
+    byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+    var ms = msgsOf(lastXhr);
+    var t = payloadTokens17(ms);
+    if (t > peak17) { peak17 = t; }
+    return ms;
+  }
+  /* 独立复算一遍 token，用来验证“发出去的整窗不会超过上限” */
+  function tok17(s) {
+    var w = 0, nz = 0, k, c;
+    for (k = 0; k < s.length; k++) { c = s.charCodeAt(k); if (c >= 0x2e80) { w++; } else { nz++; } }
+    return w + Math.ceil(nz / 3);
+  }
+  function payloadTokens17(ms) {
+    var t = 0, k;
+    for (k = 0; k < ms.length; k++) { t += tok17(ms[k].content || "") + 4; }
+    return t;
+  }
+  var peak17 = 0;
+
+  /* 36 轮短对话：旧实现从第 31 条起每轮把窗口往前滑两条，前缀每轮都作废 */
+  var i17, prev17 = null, cur17, prefixOk = true, grewOk = true, maxLen = 0;
+  for (i17 = 0; i17 < 36; i17++) {
+    cur17 = ask17("第 " + i17 + " 轮提问");
+    if (prev17) {
+      if (!isPrefix(prev17, cur17)) { prefixOk = false; }
+      if (cur17.length !== prev17.length + 2) { grewOk = false; }
+    }
+    if (cur17.length > maxLen) { maxLen = cur17.length; }
+    prev17 = cur17;
+    lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "回答 " + i17 } }] }));
+  }
+  check("36 轮之后每轮请求仍是上一轮的延长（前缀不滑动）", prefixOk);
+  check("每轮只在尾部追加 2 条（user + assistant）", grewOk);
+  check("不再固定截断在 30 条", maxLen === 71, String(maxLen));
+  check("历史全在，且不以 assistant 开头", rounds17StartOk(prev17), prev17[0].role);
+  function rounds17StartOk(arr) { return arr[0].role === "user" && arr[0].content === "第 0 轮提问"; }
+
+  /* 超长历史：一次裁到下限，之后若干轮边界都不动 */
+  var big17 = new Array(30001).join("a");   /* 约 10000 token */
+  var lens = [];
+  for (i17 = 0; i17 < 6; i17++) {
+    lens.push(ask17(big17 + i17).length);
+    lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "收到 " + i17 } }] }));
+  }
+  check("超过上下文水位后确实裁剪了", lens[5] < lens[4], lens.join(","));
+  check("裁剪后整窗裁到下限以内", payloadTokens17(msgsOf(lastXhr)) <= 20000, String(payloadTokens17(msgsOf(lastXhr))));
+  check("裁剪后仍保留最新那条提问（不是清空）", lens[5] >= 1 && msgsOf(lastXhr)[msgsOf(lastXhr).length - 1].content === big17 + "5");
+  check("裁剪后仍以 user 开头", msgsOf(lastXhr)[0].role === "user");
+
+  var prevB = null, curB, stableB = true, grewB = true, firstB = null, sameFirstB = true;
+  for (i17 = 0; i17 < 4; i17++) {
+    curB = ask17("裁剪后短问 " + i17);
+    if (prevB) {
+      if (!isPrefix(prevB, curB)) { stableB = false; }
+      if (curB.length !== prevB.length + 2) { grewB = false; }
+    }
+    if (firstB === null) { firstB = curB[0].content; }
+    else if (curB[0].content !== firstB) { sameFirstB = false; }
+    check("裁剪后第 " + i17 + " 轮开头是 user", curB[0].role === "user", curB[0].role);
+    prevB = curB;
+    lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "短 " + i17 } }] }));
+  }
+  check("裁剪后连续几轮前缀不再滑动", stableB);
+  check("裁剪后每轮只追加 2 条", grewB);
+  check("裁剪后开头一直同一条消息（旧实现每轮往前挪两条）", sameFirstB);
+
+  /* 系统提示词变了属于用户主动操作，只验证它仍然排在最前 */
+  byId.systemPrompt.value = "你是简洁的助手";
+  byId.saveSettings.onclick();
+  var withSys = ask17("带系统提示词");
+  check("system 仍然固定在数组最前面", withSys[0].role === "system" && withSys[1].role === "user");
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
+  check("任何一轮发出去的整窗都在上限以内（旧实现会冲到十几万 token）", peak17 <= 52000, String(peak17));
+
+  /* 清空之后窗口起点要重置，否则会拿旧下标去截新数组 */
+  byId.clearChat.onclick();
+  var afterClear = ask17("清空之后再问一句");
+  var histClear = [], kc;
+  for (kc = 0; kc < afterClear.length; kc++) { if (afterClear[kc].role !== "system") { histClear.push(afterClear[kc]); } }
+  check("清空后窗口起点重置，不会拿旧下标截空", histClear.length === 1 && histClear[0].role === "user" &&
+    histClear[0].content === "清空之后再问一句", JSON.stringify(histClear));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
+
   report();
 }, 300);
 

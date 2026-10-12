@@ -19,7 +19,16 @@
   var KEY_CURRENT = "minichat.current.v1";
 
   var MAX_STORED_MESSAGES = 200;   // 每个对话本地最多保留的消息条数
-  var SEND_HISTORY_LIMIT = 30;     // 每次发给模型的最近消息条数（省 token）
+
+  /* 上下文窗口：DeepSeek 的上下文缓存按「请求前缀」命中，所以窗口只能往后
+     延长，不能每轮滑动 —— 窗口一滑（“最近 N 条”就是这样），开头第一句每轮
+     都换人，前缀从第一个 token 就断了，长对话的缓存命中率会掉到两成左右。
+     做法：每个对话记一个窗口起点 trimStart，只有整窗估算 token 超过上限时
+     才一次性裁到下限以下；此后很多轮都不动，于是每轮请求都只是上一轮的
+     “尾部多两条”，前缀完全一致。 */
+  var CONTEXT_TOKENS_HIGH = 52000; // 窗口估算 token 超过它就裁剪（上下文 64K）
+  var CONTEXT_TOKENS_LOW = 20000;  // 一次裁到这个水位以下，留出“续命”空间
+  var TOKENS_PER_MESSAGE = 4;      // 每条消息 role 等固定开销
   var MAX_CONVERSATIONS = 50;      // 本地最多保留的对话数
   var REQUEST_TIMEOUT = 120000;    // 请求超时（毫秒）
   var STREAM_IDLE_TIMEOUT = 60000; // 流式输出：多久没有新内容就算卡住
@@ -1104,6 +1113,7 @@
     if (!conv.messages.length) { setStatus("当前对话本来就是空的"); return; }
     if (!window.confirm("确定清空当前对话的全部消息吗？")) { return; }
     conv.messages = [];
+    conv.trimStart = 0;          /* 上下文窗口跟着重来 */
     conv.title = "新对话";
     conv.updatedAt = nowMs();
     persistConversations();
@@ -1137,23 +1147,67 @@
     return msg;
   }
 
+  /* 粗略估算 token 数（不引第三方分词器）：中日韩等全角字符按 1 个算，
+     其余按 3 个字符 1 token 算。宁可贵一点，也不要因为超长被接口拒绝。 */
+  function estimateTokens(text) {
+    if (!text) { return 0; }
+    var i, code, wide = 0, narrow = 0;
+    for (i = 0; i < text.length; i++) {
+      code = text.charCodeAt(i);
+      if (code >= 0x2e80) { wide++; } else { narrow++; }
+    }
+    return wide + Math.ceil(narrow / 3);
+  }
+
+  /* 这条消息要占多少上下文（不进上下文的消息返回 0） */
+  function msgTokens(m) {
+    if (!m || !m.content || m.skip) { return 0; }
+    if (m.role !== "user" && m.role !== "assistant") { return 0; }
+    return estimateTokens(m.content) + TOKENS_PER_MESSAGE;
+  }
+
+  /* 维护 conv.trimStart，返回这一轮要从哪条消息开始发。
+     只有整窗超过上限时才往后挪一次，平时一行都不删。 */
+  function advanceWindow(conv) {
+    var n = conv.messages.length;
+    var s = conv.trimStart || 0;
+    var total = 0;
+    var i;
+
+    if (s < 0) { s = 0; }
+    if (s > n - 1) { s = n > 0 ? (n - 1) : 0; }
+    for (i = s; i < n; i++) { total += msgTokens(conv.messages[i]); }
+    if (total === 0 && s > 0) {
+      /* 起点失效（例如刚清空、消息被换掉）：退回整段重算 */
+      s = 0;
+      for (i = 0; i < n; i++) { total += msgTokens(conv.messages[i]); }
+    }
+    if (total > CONTEXT_TOKENS_HIGH) {
+      /* 一次性裁到下限以下：接下来很多轮边界都不动，前缀保持稳定 */
+      while (s < n - 1 && total > CONTEXT_TOKENS_LOW) {
+        total -= msgTokens(conv.messages[s]);
+        s++;
+      }
+    }
+    conv.trimStart = s;
+    return s;
+  }
+
   /* 组装发给接口的消息数组 */
   function buildPayload(conv) {
     var out = [];
     var history = [];
+    var start = advanceWindow(conv);
     var i, m;
 
     if (trim(settings.systemPrompt)) {
       out.push({ role: "system", content: settings.systemPrompt });
     }
-    for (i = 0; i < conv.messages.length; i++) {
+    for (i = start; i < conv.messages.length; i++) {
       m = conv.messages[i];
       if (m.role !== "user" && m.role !== "assistant") { continue; }
       if (m.skip || !m.content) { continue; }
       history.push({ role: m.role, content: m.content });
-    }
-    if (history.length > SEND_HISTORY_LIMIT) {
-      history = history.slice(history.length - SEND_HISTORY_LIMIT);
     }
     /* 开头必须是 user，否则模型可能报错 */
     while (history.length && history[0].role !== "user") { history.shift(); }
