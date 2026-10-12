@@ -20,18 +20,22 @@
 
   var MAX_STORED_MESSAGES = 200;   // 每个对话本地最多保留的消息条数
 
-  /* 上下文窗口：DeepSeek 的上下文缓存按「请求前缀」命中，所以窗口只能往后
-     延长，不能每轮滑动 —— 窗口一滑（“最近 N 条”就是这样），开头第一句每轮
-     都换人，前缀从第一个 token 就断了，长对话的缓存命中率会掉到两成左右。
-     做法：每个对话记一个窗口起点 trimStart，只有整窗估算 token 超过上限时
-     才一次性裁到下限以下；此后很多轮都不动，于是每轮请求都只是上一轮的
-     “尾部多两条”，前缀完全一致。 */
-  var CONTEXT_TOKENS_HIGH = 52000; // 窗口估算 token 超过它就裁剪（上下文 64K）
-  var CONTEXT_TOKENS_LOW = 20000;  // 一次裁到这个水位以下，留出“续命”空间
+  /* 上下文预算：数字都是「估算 token」（estimateTokens 只会偏高，所以真实占用
+     一定在它以内）。high = 整窗上限，超过就一次裁到 low 以下；low 是「续命」
+     空间 —— 边界挪得越少，请求前缀越稳，缓存命中率越高。
+     deepseek 现在的模型是 1M 上下文（deepseek-chat 已指向 V4.1），所以默认给
+     1M 留足余量；换成老模型或第三方中转时，到设置里挑小一档，否则请求会被
+     接口按“超出上下文长度”直接拒掉。 */
+  var CONTEXT_BUDGETS = {
+    "1m":   { high: 640000, low: 320000 },
+    "256k": { high: 160000, low: 80000 },
+    "128k": { high: 80000,  low: 40000 },
+    "64k":  { high: 40000,  low: 20000 }
+  };
   var TOKENS_PER_MESSAGE = 4;      // 每条消息 role 等固定开销
   var MAX_CONVERSATIONS = 50;      // 本地最多保留的对话数
-  var REQUEST_TIMEOUT = 120000;    // 请求超时（毫秒）
-  var STREAM_IDLE_TIMEOUT = 60000; // 流式输出：多久没有新内容就算卡住
+  var REQUEST_TIMEOUT = 300000;    // 非流式请求的整体超时（上下文大时要久一点）
+  var STREAM_IDLE_TIMEOUT = 120000;// 流式输出：多久没有新内容就算卡住
   var STREAM_RENDER_INTERVAL = 120;// 流式输出：最快多少毫秒重画一次气泡
 
   var DEFAULT_SETTINGS = {
@@ -43,7 +47,8 @@
     theme: "auto",         /* auto | light | dark */
     settingsOpen: null,    /* true/false = 用户手动选过；null = 自动（没填 Key 就展开） */
     mdEnabled: true,       /* 回答用 Markdown 排版 */
-    streaming: true        /* 流式输出（边生成边显示） */
+    streaming: true,       /* 流式输出（边生成边显示） */
+    contextBudget: "1m"    /* 每次请求最多带多少上下文（见 CONTEXT_BUDGETS） */
   };
 
   /* ----------------------------- 存储层 --------------------------------- */
@@ -440,7 +445,13 @@
     if (s.settingsOpen !== true && s.settingsOpen !== false) { s.settingsOpen = null; }
     s.mdEnabled = (s.mdEnabled === false) ? false : true;
     s.streaming = (s.streaming === false) ? false : true;
+    if (!CONTEXT_BUDGETS[s.contextBudget]) { s.contextBudget = DEFAULT_SETTINGS.contextBudget; }
     return s;
+  }
+
+  /* 当前选中的上下文预算（设置里的值是非法值时退回默认档） */
+  function contextBudget() {
+    return CONTEXT_BUDGETS[settings.contextBudget] || CONTEXT_BUDGETS[DEFAULT_SETTINGS.contextBudget];
   }
 
   function normalizeMessages(arr) {
@@ -612,7 +623,8 @@
       theme: settings.theme,
       settingsOpen: settings.settingsOpen,
       mdEnabled: settings.mdEnabled,
-      streaming: settings.streaming
+      streaming: settings.streaming,
+      contextBudget: settings.contextBudget
     };
     storeSet(KEY_SETTINGS, JSON.stringify(toSave));
     storeSet(KEY_CURRENT, currentId || "");
@@ -1083,6 +1095,7 @@
     $("themeSel").value = settings.theme;
     $("mdEnabled").checked = settings.mdEnabled;
     $("streamEnabled").checked = settings.streaming;
+    $("ctxBudget").value = settings.contextBudget;
   }
 
   function readFormIntoSettings() {
@@ -1095,6 +1108,8 @@
     if (t === "dark" || t === "light" || t === "auto") { settings.theme = t; }
     settings.mdEnabled = !!$("mdEnabled").checked;
     settings.streaming = !!$("streamEnabled").checked;
+    var cb = $("ctxBudget").value;
+    if (CONTEXT_BUDGETS[cb]) { settings.contextBudget = cb; }
   }
 
   function updateStoreNote() {
@@ -1282,21 +1297,32 @@
     return wide + Math.ceil(narrow / 3);
   }
 
-  /* 这条消息要占多少上下文（不进上下文的消息返回 0） */
+  /* 这条消息要占多少上下文（不进上下文的消息返回 0）。
+     结果缓存在消息对象上（tkLen 是长度指纹），这样每次发送只需要算新内容，
+     不然 1M 级别的窗口每次都要把几十万字重新数一遍。 */
   function msgTokens(m) {
     if (!m || !m.content || m.skip) { return 0; }
     if (m.role !== "user" && m.role !== "assistant") { return 0; }
-    return estimateTokens(m.content) + TOKENS_PER_MESSAGE;
+    if (typeof m.tk === "number" && m.tkLen === m.content.length) { return m.tk; }
+    m.tk = estimateTokens(m.content) + TOKENS_PER_MESSAGE;
+    m.tkLen = m.content.length;
+    return m.tk;
   }
 
   /* 维护 conv.trimStart，返回这一轮要从哪条消息开始发。
      只有整窗超过上限时才往后挪一次，平时一行都不删。 */
   function advanceWindow(conv) {
+    var budget = contextBudget();
     var n = conv.messages.length;
     var s = conv.trimStart || 0;
     var total = 0;
     var i;
 
+    /* 预算变了（改了设置、或刚打开页面还没记录）：从头重新量，窗口可以重新变大 */
+    if (conv.trimBudget !== settings.contextBudget) {
+      conv.trimBudget = settings.contextBudget;
+      s = 0;
+    }
     if (s < 0) { s = 0; }
     if (s > n - 1) { s = n > 0 ? (n - 1) : 0; }
     for (i = s; i < n; i++) { total += msgTokens(conv.messages[i]); }
@@ -1305,9 +1331,9 @@
       s = 0;
       for (i = 0; i < n; i++) { total += msgTokens(conv.messages[i]); }
     }
-    if (total > CONTEXT_TOKENS_HIGH) {
+    if (total > budget.high) {
       /* 一次性裁到下限以下：接下来很多轮边界都不动，前缀保持稳定 */
-      while (s < n - 1 && total > CONTEXT_TOKENS_LOW) {
+      while (s < n - 1 && total > budget.low) {
         total -= msgTokens(conv.messages[s]);
         s++;
       }
@@ -1364,7 +1390,13 @@
     var base;
     switch (status) {
       case 0:   base = "网络错误或请求被中断（可能是代理、公司网络或浏览器拦截）"; break;
-      case 400: base = "请求格式错误（400）"; break;
+      case 400:
+        base = "请求格式错误（400）";
+        /* 上下文超长是最常见的 400，直接把怎么解决写进提示里 */
+        if (/context length|context_length|maximum context|too many tokens|上下文/i.test(apiMsg)) {
+          base = "超出上下文长度（400）：到「设置 → 每次最多带多少上下文」调小一档再试";
+        }
+        break;
       case 401: base = "API Key 无效或未授权（401），请检查 Key 是否填写正确"; break;
       case 402: base = "账户余额不足（402），请到 DeepSeek 平台充值"; break;
       case 403: base = "没有访问权限（403）"; break;
@@ -1809,6 +1841,13 @@
     $("streamEnabled").onchange = function () {
       settings.streaming = !!$("streamEnabled").checked;
       persistSettings();
+    };
+    /* 上下文预算：下次发送时窗口会按新预算从头重算（调大能把旧消息重新带上） */
+    $("ctxBudget").onchange = function () {
+      var cb = $("ctxBudget").value;
+      if (CONTEXT_BUDGETS[cb]) { settings.contextBudget = cb; }
+      persistSettings();
+      setStatus("上下文上限已保存（下次发送生效）");
     };
     bindSystemTheme();
 

@@ -88,7 +88,7 @@ var byId = {};
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
- "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel"].forEach(function (id) { byId[id] = makeEl("div"); });
+ "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel", "ctxBudget"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
 metaTheme.setAttribute("name", "theme-color");
@@ -308,6 +308,20 @@ for (ri = 0; ri < afterErr.messages.length; ri++) {
 check("上下文里只有 user/assistant/system", rolesOk);
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好的" } }] }));
 
+/* 超过上下文长度也是 400，提示里要直接给出可操作的办法 */
+byId.input.value = "太长了";
+byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+lastXhr.respond(400, JSON.stringify({ error: { message: "This model's maximum context length is 1048576 tokens." } }));
+var lastMsg3 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+var errText = lastMsg3.childNodes[1].childNodes[0].textContent;
+check("上下文超长给出可操作提示", /超出上下文长度/.test(errText) && /每次最多带多少上下文/.test(errText), errText);
+check("同时保留接口原文", /maximum context length/.test(errText), errText);
+byId.input.value = "普通 400";
+byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+lastXhr.respond(400, JSON.stringify({ error: { message: "bad request" } }));
+var errText2 = byId.messages.childNodes[byId.messages.childNodes.length - 1].childNodes[1].childNodes[0].textContent;
+check("其他 400 不误报为上下文超长", /请求格式错误/.test(errText2) && !/超出上下文长度/.test(errText2), errText2);
+
 console.log("\n[6] 新对话 / 切换 / 清空 / 删除");
 byId.newChat.onclick();
 check("新建后有 2 个对话", byId.convList.childNodes.length === 2);
@@ -320,7 +334,7 @@ check("第二条对话有 2 条消息", byId.messages.childNodes.length === 2);
 /* 切换到第一个对话（列表第 2 项，点标题而不是删除按钮） */
 var secondItem = byId.convList.childNodes[1];
 byId.convList.onclick({ target: secondItem.childNodes[0], srcElement: secondItem.childNodes[0] });
-check("切换后显示旧对话的 6 条消息", byId.messages.childNodes.length === 6, byId.messages.childNodes.length);
+check("切换后显示旧对话的全部消息", byId.messages.childNodes.length === 10, byId.messages.childNodes.length);
 check("切换后高亮跟随", byId.convList.childNodes[1].className.indexOf("active") !== -1);
 
 /* 删除当前对话，应自动切到剩下的那个 */
@@ -807,7 +821,7 @@ window.setTimeout(function () {
   byId.input.value = "非流式";
   byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
   check("关掉后请求 stream:false", JSON.parse(lastXhr.body).stream === false);
-  check("关掉后恢复整体超时", lastXhr.timeout === 120000, String(lastXhr.timeout));
+  check("关掉后恢复整体超时", lastXhr.timeout === 300000, String(lastXhr.timeout));
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "非流式回答" } }] }));
   var d6 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
   check("非流式路径正常", textOf(d6.childNodes[1]) === "非流式回答", textOf(d6.childNodes[1]));
@@ -873,17 +887,29 @@ window.setTimeout(function () {
   check("历史全在，且不以 assistant 开头", rounds17StartOk(prev17), prev17[0].role);
   function rounds17StartOk(arr) { return arr[0].role === "user" && arr[0].content === "第 0 轮提问"; }
 
-  /* 超长历史：一次裁到下限，之后若干轮边界都不动 */
+  /* 超长历史：先切到 64K 预算，验证“一次裁到下限、之后边界不动” */
+  byId.ctxBudget.value = "64k";
+  byId.ctxBudget.onchange();
+  check("上下文上限设置已落盘", JSON.parse(lsData["minichat.settings.v1"]).contextBudget === "64k",
+    lsData["minichat.settings.v1"]);
+
   var big17 = new Array(30001).join("a");   /* 约 10000 token */
-  var lens = [];
+  var lens = [], arrs = [], trimTurn = -1, prevLen = -1;
+  peak17 = 0;                               /* 这一段按 64K 预算算 */
   for (i17 = 0; i17 < 6; i17++) {
-    lens.push(ask17(big17 + i17).length);
+    cur17 = ask17(big17 + i17);
+    arrs.push(cur17);
+    lens.push(cur17.length);
+    if (prevLen >= 0 && cur17.length < prevLen && trimTurn < 0) { trimTurn = i17; }
+    prevLen = cur17.length;
     lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "收到 " + i17 } }] }));
   }
-  check("超过上下文水位后确实裁剪了", lens[5] < lens[4], lens.join(","));
-  check("裁剪后整窗裁到下限以内", payloadTokens17(msgsOf(lastXhr)) <= 20000, String(payloadTokens17(msgsOf(lastXhr))));
-  check("裁剪后仍保留最新那条提问（不是清空）", lens[5] >= 1 && msgsOf(lastXhr)[msgsOf(lastXhr).length - 1].content === big17 + "5");
-  check("裁剪后仍以 user 开头", msgsOf(lastXhr)[0].role === "user");
+  check("超过 64K 预算后确实裁剪了", trimTurn > 0, lens.join(","));
+  check("裁剪那一轮整窗被裁到下限以内", payloadTokens17(arrs[trimTurn]) <= 20000, String(payloadTokens17(arrs[trimTurn])));
+  check("裁剪后仍保留最新那条提问（不是清空）",
+    arrs[trimTurn][arrs[trimTurn].length - 1].content === big17 + trimTurn);
+  check("裁剪后仍以 user 开头", arrs[trimTurn][0].role === "user");
+  check("64K 预算下每一轮整窗都不超过上限", peak17 <= 40000, String(peak17));
 
   var prevB = null, curB, stableB = true, grewB = true, firstB = null, sameFirstB = true;
   for (i17 = 0; i17 < 4; i17++) {
@@ -908,7 +934,17 @@ window.setTimeout(function () {
   var withSys = ask17("带系统提示词");
   check("system 仍然固定在数组最前面", withSys[0].role === "system" && withSys[1].role === "user");
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
-  check("任何一轮发出去的整窗都在上限以内（旧实现会冲到十几万 token）", peak17 <= 52000, String(peak17));
+  /* 把预算调回 1M：窗口应该重新变大，之前被裁掉的旧消息全部回来 */
+  var beforeExpand = msgsOf(lastXhr).length;
+  byId.ctxBudget.value = "1m";
+  byId.ctxBudget.onchange();
+  peak17 = 0;
+  var expanded = ask17("调回大预算之后再问一句");
+  check("调大预算后窗口重新变大（旧消息都回来了）", expanded.length > beforeExpand + 2,
+    expanded.length + " vs " + beforeExpand);
+  check("调大后第一条又回到最早的提问", expanded[1].content === "第 0 轮提问", expanded[1].content);
+  check("调大后整窗仍在上限以内（旧实现会冲到几十万 token）", peak17 <= 640000, String(peak17));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
 
   /* 清空之后窗口起点要重置，否则会拿旧下标去截新数组 */
   byId.clearChat.onclick();
