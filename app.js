@@ -106,6 +106,7 @@
   var conversations = [];
   var currentId = null;
   var busy = false;
+  var editingIndex = -1;             /* 正在编辑的用户消息下标；-1 = 没在编辑 */
   var activeXhr = null;
   var activeRequestCleanup = null;   /* 当前请求的统一收尾函数（含清空闲定时器） */
   var requestAborted = false;
@@ -189,6 +190,50 @@
     var head = $("topbar");
     var h = head && head.offsetHeight ? head.offsetHeight : 60;
     box.style.paddingTop = (h + 8) + "px";
+  }
+
+  /* 手机上输入框和顶栏一样常驻屏幕底部（position:fixed），所以消息区要按它
+     的真实高度留出底部空白，否则最后一条会被压住；「回到底部」按钮也要跟着
+     抬高。桌面端布局是绝对定位，清掉内联样式交回 CSS。 */
+  var KBD_FLOW_CLASS = "kbd-flow";
+
+  function kbdFlowOn() {
+    var bar = $("composer");
+    return !!(bar && bar.className && bar.className.indexOf(KBD_FLOW_CLASS) !== -1);
+  }
+
+  function syncComposerSpace() {
+    var box = $("messages");
+    var bar = $("composer");
+    var btn = $("toBottom");
+    if (!box || !bar) { return; }
+    if (!isMobile()) {
+      box.style.paddingBottom = "";
+      if (btn) { btn.style.bottom = ""; }
+      return;
+    }
+    if (kbdFlowOn()) {
+      /* 已经退回文档流：输入框紧跟在消息后面，不用再留固定高度 */
+      box.style.paddingBottom = "12px";
+      return;
+    }
+    var h = bar.offsetHeight ? bar.offsetHeight : 150;
+    box.style.paddingBottom = (h + 12) + "px";
+    if (btn) { btn.style.bottom = (h + 20) + "px"; }
+  }
+
+  /* 老 iOS 的键盘不会把 position:fixed 的元素顶上去，输入框会被键盘盖住；
+     聚焦时临时退回文档流，iOS 才会自动把它滚到键盘上方，失焦后再钉回去。 */
+  function setKbdFlow(on) {
+    var bar = $("composer");
+    if (!bar) { return; }
+    /* 桌面端输入框本来就在绝对定位的容器里，不需要这套；
+       动了反而会把 #main 的布局推开。 */
+    if (!isMobile()) { on = false; }
+    var want = on ? KBD_FLOW_CLASS : "";
+    if (bar.className !== want) { bar.className = want; }
+    syncComposerSpace();
+    if (on) { scrollToBottom(); }
   }
 
   function openDrawer() {
@@ -962,6 +1007,15 @@
     }
   }
 
+  /* 「编辑」按钮：下标直接闭包进去，不用事件委托那一套 */
+  function makeEditButton(index) {
+    var b = el("button", "btn edit-btn", "编辑");
+    b.type = "button";
+    b.title = "编辑这条提问并重新发送";
+    b.onclick = function () { startEdit(index); };
+    return b;
+  }
+
   function renderMessages() {
     var box = $("messages");
     var conv = getCurrent();
@@ -976,11 +1030,16 @@
     }
 
     var i, m, wrap, head, body, name;
+    var lastUser = lastUserIndex(conv);
     for (i = 0; i < conv.messages.length; i++) {
       m = conv.messages[i];
       name = m.role === "user" ? "我" : (m.role === "error" ? "错误" : "AI");
       wrap = el("div", "msg " + m.role + (m.pending ? " pending" : ""));
       head = el("div", "msg-head", name + " · " + formatTime(m.ts));
+      /* 只有最后一条用户消息能编辑重发；正在等待回答时不显示，避免状态打架 */
+      if (i === lastUser && !busy && editingIndex < 0) {
+        head.appendChild(makeEditButton(i));
+      }
       wrap.appendChild(head);
 
       body = el("div", "msg-body");
@@ -1011,6 +1070,7 @@
     if (autoScroll) { scrollToBottom(); }
     autoScroll = false;
     updateToBottom();
+    syncComposerSpace();        /* 输入框高度可能变了（编辑提示条），底部留白跟着改 */
     scheduleTableHints();       /* 表格要不要横滑，得等布局算完 */
   }
 
@@ -1052,6 +1112,7 @@
   function selectConversation(id) {
     if (busy) { setStatus("正在等待回答，请先停止或等待完成", true); return; }
     if (!findConversation(id)) { return; }
+    cancelEdit(true);            /* 换对话了，编辑状态跟着作废 */
     currentId = id;
     storeSet(KEY_CURRENT, currentId);
     closeDrawer();
@@ -1074,12 +1135,14 @@
     }
     if (idx >= 0) { conversations.splice(idx, 1); }
 
+    var wasCurrent = (currentId === id);
     if (conversations.length === 0) {
       createConversation();
-    } else if (currentId === id) {
+    } else if (wasCurrent) {
       currentId = conversations[0].id;
       storeSet(KEY_CURRENT, currentId);
     }
+    if (wasCurrent) { cancelEdit(true); }   /* 删的是别的对话就别动编辑状态 */
     persistConversations();
     renderConvList();
     closeDrawer();
@@ -1096,6 +1159,7 @@
       setStatus("当前已经是一个空对话");
       return;
     }
+    cancelEdit(true);
     createConversation();
     persistConversations();
     renderConvList();
@@ -1112,6 +1176,7 @@
     var conv = getCurrent();
     if (!conv.messages.length) { setStatus("当前对话本来就是空的"); return; }
     if (!window.confirm("确定清空当前对话的全部消息吗？")) { return; }
+    cancelEdit(true);
     conv.messages = [];
     conv.trimStart = 0;          /* 上下文窗口跟着重来 */
     conv.title = "新对话";
@@ -1122,6 +1187,64 @@
     autoScroll = true;
     renderMessages();
     setStatus("已清空当前对话");
+  }
+
+  /* --------------------- 编辑最后一条提问并重发 -------------------------- */
+  /* 只能编辑「最后一条用户消息」：发送时把它以及它后面的回答全部丢掉，
+     再按新内容重新问一遍。这样不用做消息级删除，语义也最简单。 */
+
+  function lastUserIndex(conv) {
+    var k;
+    for (k = conv.messages.length - 1; k >= 0; k--) {
+      if (conv.messages[k].role === "user") { return k; }
+    }
+    return -1;
+  }
+
+  function renderEditBar() {
+    var bar = $("editBar");
+    if (bar) { bar.className = editingIndex >= 0 ? "edit-bar on" : "edit-bar"; }
+    setBusy(busy);            /* 按钮文字：编辑时是「重发」 */
+    syncComposerSpace();      /* 提示条出现后输入框变高，底部留白要跟着改 */
+  }
+
+  function startEdit(index) {
+    if (busy) { return; }
+    var conv = getCurrent();
+    var m = conv.messages[index];
+    if (!m || m.role !== "user") { return; }
+    editingIndex = index;
+    $("input").value = m.content;
+    renderEditBar();
+    setStatus("编辑中：发送后会从这里重新回答");
+    autoScroll = false;                 /* 别把用户看的位置顶走 */
+    renderMessages();
+    $("input").focus();
+  }
+
+  /* quiet = true 时不提示、不打扰（切换对话、清空时顺带收尾用） */
+  function cancelEdit(quiet) {
+    if (editingIndex < 0) { return; }
+    editingIndex = -1;
+    $("input").value = "";
+    renderEditBar();
+    autoScroll = false;
+    renderMessages();                 /* 让「编辑」按钮回到气泡上 */
+    if (!quiet) { setStatus("已取消编辑"); }
+  }
+
+  /* 发送前调用：返回 true 表示这次是「重发」，历史已经裁到这条之前 */
+  function consumeEdit(conv) {
+    if (editingIndex < 0) { return false; }
+    var idx = editingIndex;
+    editingIndex = -1;
+    renderEditBar();
+    if (idx >= 0 && idx < conv.messages.length) {
+      conv.messages = conv.messages.slice(0, idx);   /* 这条和它后面的回答全丢掉 */
+      if ((conv.trimStart || 0) > idx) { conv.trimStart = idx; }
+      return true;
+    }
+    return false;
   }
 
   function addMessage(conv, role, content, reasoning) {
@@ -1217,15 +1340,14 @@
   function setBusy(value) {
     busy = !!value;
     var btn = $("send");
+    var label = busy ? "停止" : (editingIndex >= 0 ? "重发" : "发送");
     if (busy) {
       btn.className = "btn btn-stop";
-      btn.innerHTML = "";
-      btn.appendChild(document.createTextNode("停止"));
     } else {
       btn.className = "btn btn-primary";
-      btn.innerHTML = "";
-      btn.appendChild(document.createTextNode("发送"));
     }
+    btn.innerHTML = "";
+    btn.appendChild(document.createTextNode(label));
   }
 
   function describeHttpError(status, bodyText) {
@@ -1506,7 +1628,10 @@
 
     var input = $("input");
     var text = input.value;
-    if (!trim(text)) { return; }
+    if (!trim(text)) {
+      if (editingIndex >= 0) { setStatus("编辑内容不能为空", true); }
+      return;
+    }
 
     /* 顺手同步表单里未保存的改动，避免“填了 Key 却忘了点保存”被挡住 */
     readFormIntoSettings();
@@ -1522,6 +1647,10 @@
     persistSettings();
 
     var conv = getCurrent();
+
+    /* 编辑重发：先把这条提问和它后面的内容裁掉，再从这条重新问 */
+    consumeEdit(conv);
+
     addMessage(conv, "user", text, "");
     input.value = "";
     addMessage(conv, "assistant", "", "");
@@ -1530,10 +1659,10 @@
     streamMsg = target;                   /* 流式期间直接改这一个气泡，不整屏重画 */
 
     autoScroll = true;                    /* 自己发的消息，一定跟到底部 */
+    setBusy(true);                        /* 先置忙，重画时就不会给这条挂「编辑」 */
     renderMessages();
     renderConvList();
     persistConversations();
-    setBusy(true);
     setStatus(settings.streaming ? "正在生成…" : "正在等待回答…");
 
     var payload = buildPayload(conv);
@@ -1693,6 +1822,7 @@
     window.onload = function () {
       refreshTableHints();
       syncHeaderSpace();
+      syncComposerSpace();
     };
 
     /* 页面滚动（移动端）时决定「回到底部」按钮显示与否 */
@@ -1700,6 +1830,7 @@
     window.onresize = function () {
       closeDrawer();
       syncHeaderSpace();
+      syncComposerSpace();
       updateToBottom();
       refreshTableHints();      /* 横竖屏 / 窗口变化后，能横滑的表格可能变了 */
     };
@@ -1707,7 +1838,7 @@
       window.onorientationchange = function () {
         closeDrawer();
         /* 旋转后尺寸变化有延迟，等一帧再量 */
-        window.setTimeout(function () { syncHeaderSpace(); updateToBottom(); }, 350);
+        window.setTimeout(function () { syncHeaderSpace(); syncComposerSpace(); updateToBottom(); }, 350);
       };
     }
 
@@ -1724,6 +1855,14 @@
 
     $("newChat").onclick = newConversation;
     $("clearChat").onclick = clearCurrentConversation;
+
+    /* 取消编辑：把输入框清空、按钮变回「发送」 */
+    $("editCancel").onclick = function () { cancelEdit(false); };
+
+    /* 键盘兜底：聚焦时让输入框回到文档流（老 iOS 才会把它滚到键盘上方），
+       失焦后再钉回屏幕底部。见 style.css 里 #composer 的说明。 */
+    $("input").onfocus = function () { setKbdFlow(true); };
+    $("input").onblur = function () { setKbdFlow(false); };
 
     $("saveSettings").onclick = function () {
       readFormIntoSettings();
@@ -1781,6 +1920,7 @@
     renderConvList();
     renderMessages();
     syncHeaderSpace();
+    syncComposerSpace();
     updateToBottom();
     closeDrawer();
 

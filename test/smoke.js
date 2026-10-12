@@ -88,7 +88,7 @@ var byId = {};
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
- "mdEnabled", "streamEnabled"].forEach(function (id) { byId[id] = makeEl("div"); });
+ "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
 metaTheme.setAttribute("name", "theme-color");
@@ -919,8 +919,141 @@ window.setTimeout(function () {
     histClear[0].content === "清空之后再问一句", JSON.stringify(histClear));
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
 
+  console.log("\n[18] 输入框固定在底部");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  /* 只让 max-width 命中：手机宽度，同时保持浅色模式 */
+  window.matchMedia = function (q) {
+    return { matches: q.indexOf("prefers-color-scheme") === -1, media: q,
+      addListener: function () {}, addEventListener: function () {} };
+  };
+  window.innerWidth = 380;
+  window.innerHeight = 600;
+  document.documentElement.scrollHeight = 1200;
+  document.body.scrollHeight = 1200;
+  loadApp();
+  byId.composer.offsetHeight = 160;      /* 输入框整体高度 */
+  window.onresize();                     /* 让 app 重新量一次 */
+  check("消息区按输入框高度留出底部空白", byId.messages.style.paddingBottom === "172px", byId.messages.style.paddingBottom);
+  check("「回到底部」按钮抬到输入框上方", byId.toBottom.style.bottom === "180px", byId.toBottom.style.bottom);
+  check("顶栏和输入框各自让位", byId.messages.style.paddingTop === "48px", byId.messages.style.paddingTop);
+
+  byId.apiKey.value = "sk-fixed";
+  byId.saveSettings.onclick();
+  byId.input.value = "试试固定输入框";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
+  check("回答之后底部留白依然在", byId.messages.style.paddingBottom === "172px", byId.messages.style.paddingBottom);
+
+  /* 聚焦时退回文档流（老 iOS 键盘兜底），失焦后钉回去 */
+  byId.input.onfocus();
+  check("聚焦时输入框回到文档流", byId.composer.className === "kbd-flow", byId.composer.className);
+  check("回到文档流后不再重复留白", byId.messages.style.paddingBottom === "12px", byId.messages.style.paddingBottom);
+  byId.input.onblur();
+  check("失焦后重新固定到底部", byId.composer.className === "" && byId.messages.style.paddingBottom === "172px",
+    byId.composer.className + "/" + byId.messages.style.paddingBottom);
+
+  console.log("\n[19] 编辑最后一条提问并重发");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  loadApp();
+  byId.apiKey.value = "sk-edit";
+  byId.saveSettings.onclick();
+
+  byId.input.value = "第一个问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第一个回答" } }] }));
+  check("只有最后一条用户消息带「编辑」", collectClass(byId.messages, "edit-btn").length === 1);
+  check("「编辑」挂在用户气泡的头部",
+    editBtnAt(0).parentNode === byId.messages.childNodes[0].childNodes[0], repr(byId.messages.childNodes[0].childNodes[0]));
+
+  collectClass(byId.messages, "edit-btn")[0].onclick();
+  check("点「编辑」把原文放回输入框", byId.input.value === "第一个问题", byId.input.value);
+  check("出现「正在编辑」提示条", byId.editBar.className === "edit-bar on", byId.editBar.className);
+  check("按钮变成「重发」", byId.send.childNodes[0].textContent === "重发", byId.send.childNodes[0].textContent);
+  check("编辑期间那条不再显示「编辑」", collectClass(byId.messages, "edit-btn").length === 0);
+
+  byId.input.value = "改过的问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var sentEdit = JSON.parse(lastXhr.body).messages;
+  var histEdit = [], ke;
+  for (ke = 0; ke < sentEdit.length; ke++) { if (sentEdit[ke].role !== "system") { histEdit.push(sentEdit[ke]); } }
+  check("重发时只带改过的这一问", histEdit.length === 1 && histEdit[0].content === "改过的问题", JSON.stringify(histEdit));
+  check("重发时按钮是「停止」", byId.send.childNodes[0].textContent === "停止", byId.send.childNodes[0].textContent);
+  check("旧提问和旧回答都从界面上消失", byId.messages.childNodes.length === 2 &&
+    textOf(byId.messages).indexOf("第一个问题") === -1 && textOf(byId.messages).indexOf("第一个回答") === -1,
+    textOf(byId.messages));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "新回答" } }] }));
+  check("新回答正常显示且只剩两条", byId.messages.childNodes.length === 2 && textOf(byId.messages).indexOf("新回答") > -1,
+    textOf(byId.messages));
+  check("落盘的也只有这两条", (function () {
+    var saved = JSON.parse(lsData["minichat.conversations.v1"]);
+    var ci, cur = null;
+    for (ci = 0; ci < saved.length; ci++) { if (saved[ci].messages.length === 2) { cur = saved[ci]; } }
+    return !!cur && cur.messages[0].content === "改过的问题" && cur.messages[1].content === "新回答" &&
+      cur.title.indexOf("改过的问题") === 0;
+  })(), lsData["minichat.conversations.v1"]);
+  check("重发后「编辑」又回来，按钮变回「发送」", collectClass(byId.messages, "edit-btn").length === 1 &&
+    byId.send.childNodes[0].textContent === "发送", byId.send.childNodes[0].textContent);
+
+  /* 取消编辑：输入框清空、按钮复原 */
+  collectClass(byId.messages, "edit-btn")[0].onclick();
+  byId.editCancel.onclick();
+  check("取消编辑后输入框清空", byId.input.value === "", byId.input.value);
+  check("取消编辑后提示条隐藏、按钮复原", byId.editBar.className === "edit-bar" &&
+    byId.send.childNodes[0].textContent === "发送", byId.editBar.className + "/" + byId.send.childNodes[0].textContent);
+
+  /* 编辑成空白：不许发，也不许把消息弄丢 */
+  collectClass(byId.messages, "edit-btn")[0].onclick();
+  byId.input.value = "   ";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  check("编辑成空白时不发送也不丢消息", byId.messages.childNodes.length === 2 &&
+    byId.editBar.className === "edit-bar on", byId.messages.childNodes.length + "");
+  byId.editCancel.onclick();
+
+  /* 两条提问时，仍然只有最后一条能编辑 */
+  byId.input.value = "第二个问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第二个回答" } }] }));
+  check("两条提问时也只有一个「编辑」", collectClass(byId.messages, "edit-btn").length === 1);
+  check("「编辑」在最后一条用户消息（第 3 个气泡）上",
+    editBtnAt(0).parentNode === byId.messages.childNodes[2].childNodes[0], repr(byId.messages));
+
+  /* 等待回答期间不给编辑 */
+  byId.input.value = "第三个问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  check("等待回答时没有「编辑」按钮", collectClass(byId.messages, "edit-btn").length === 0);
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第三个回答" } }] }));
+
+  /* 编辑中间那条：界面上根本没有按钮，只有最后一条有 */
+  check("只有最后一条提问可以编辑", collectClass(byId.messages, "edit-btn").length === 1 &&
+    editBtnAt(0).parentNode === byId.messages.childNodes[4].childNodes[0], repr(byId.messages));
+
+  /* 切换 / 新建对话要把编辑状态丢掉 */
+  collectClass(byId.messages, "edit-btn")[0].onclick();
+  byId.newChat.onclick();
+  check("新建对话后编辑状态清空", byId.editBar.className === "edit-bar" && byId.input.value === "" &&
+    byId.send.childNodes[0].textContent === "发送", byId.editBar.className + "/" + byId.input.value);
+
   report();
 }, 300);
+
+/* 收集子树里所有 className 含 cls 的元素；n 是取第几个（从 0 数） */
+function collectClass(node, cls, out) {
+  out = out || [];
+  var i, k;
+  if (!node || !node.childNodes) { return out; }
+  for (i = 0; i < node.childNodes.length; i++) {
+    k = node.childNodes[i];
+    if (k.nodeType === 3) { continue; }
+    if (k.className && k.className.indexOf(cls) !== -1) { out.push(k); }
+    collectClass(k, cls, out);
+  }
+  return out;
+}
+function editBtnAt(n) { return collectClass(byId.messages, "edit-btn")[n]; }
 
 function report() {
   console.log("\n=========================================");

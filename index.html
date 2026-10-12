@@ -105,6 +105,11 @@
     <div id="messages"></div>
 
     <div id="composer">
+      <!-- 编辑上一条提问时的提示条，平时隐藏 -->
+      <div id="editBar" class="edit-bar">
+        <span class="edit-text">正在编辑提问：发送后会从这里重新回答</span>
+        <button type="button" id="editCancel" class="btn edit-cancel">取消</button>
+      </div>
       <textarea id="input" rows="3" spellcheck="false" enterkeyhint="send"
         placeholder="在这里输入消息…（手机上按键盘的发送键，电脑上按 Enter 发送）"></textarea>
       <div class="composer-actions">

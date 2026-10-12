@@ -236,8 +236,11 @@ textarea { resize: none; }
 .note { font-size: 12px; color: #777; line-height: 1.45; margin-top: 8px; }
 
 /* ==========================================================================
- * 消息区：普通文档流（关键：iOS 键盘弹出时系统会自动把输入框滚到键盘上方，
- * 若把输入框做成 position:fixed，老 iOS 上会被键盘直接挡住）
+ * 消息区
+ *
+ * 输入框和顶栏一样固定（position:fixed 非常老，IE7 就有）。
+ * 唯一的坑是老 iOS 的键盘不会把固定定位的元素顶上去，所以输入框获得焦点时
+ * 由 JS 加 .kbd-flow 退回文档流 —— 那时 iOS 才会自动把输入框滚到键盘上方。
  * ======================================================================== */
 
 #main { position: static; margin: 0; height: auto; }
@@ -245,18 +248,26 @@ textarea { resize: none; }
 #messages {
   position: static;
   overflow: visible;
-  /* 顶部留出固定顶栏的高度，加载后由 JS 按实际顶栏高度校准 */
-  padding: 64px 10px 12px 10px;
+  /* 顶部留出固定顶栏的高度，底部留出固定输入框的高度；
+     两处都由 JS 按真实高度校准，这里的数值是没 JS 时的兜底 */
+  padding: 64px 10px 150px 10px;
 }
 
 #composer {
-  position: static;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12;                 /* 低于抽屉(30)和遮罩(20) */
   padding: 8px 10px 12px 10px;
   padding-bottom: calc(12px + constant(safe-area-inset-bottom));
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
   border-top: 1px solid #d5dae1;
   background: #f2f4f7;
 }
+
+/* 输入框聚焦时退回文档流：老 iOS 会因此把它滚到键盘上方，不会被键盘挡住 */
+#composer.kbd-flow { position: static; }
 
 /* 固定 3 行高度：不做 JS 自动增高，少一处老 iOS 上的不确定性。
    内容超长时输入框内部滚动。 */
@@ -272,6 +283,22 @@ textarea { resize: none; }
 .composer-actions:after { content: ""; display: table; clear: both; }
 #hint { display: none; }   /* 手机上不占地方 */
 
+/* 「正在编辑」提示条：默认隐藏，点了气泡上的「编辑」才出现 */
+.edit-bar {
+  display: none;
+  margin: 0 0 8px 0;
+  padding: 6px 8px;
+  border: 1px solid #b9d0ee;
+  background: #e7f0fd;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.edit-bar.on { display: block; }
+.edit-bar:after { content: ""; display: table; clear: both; }
+.edit-text { float: left; color: #2b4a75; max-width: 60%; }
+.edit-cancel { float: right; min-width: 64px; min-height: 32px; background: #fff; }
+
 .empty { color: #888; padding: 20px 4px; }
 
 /* ==========================================================================
@@ -280,6 +307,19 @@ textarea { resize: none; }
 
 .msg { margin: 0 0 12px 0; }
 .msg-head { font-size: 11px; color: #888; margin-bottom: 3px; }
+.msg-head:after { content: ""; display: table; clear: both; }
+
+/* 「编辑」：只出现在最后一条用户消息上，点了就把内容放回输入框重发。
+   min-height 给到 32px，够手指点，又不至于把气泡顶得太开。 */
+.edit-btn {
+  float: right;
+  min-height: 32px;
+  min-width: 60px;
+  margin: -8px 0 0 8px;
+  padding: 4px 10px;
+  font-size: 13px;
+  background: #fff;
+}
 .msg-body {
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -495,8 +535,13 @@ textarea { resize: none; }
     padding: 8px 12px;
     background: #f7f8fa;
   }
+  /* 桌面端不玩「聚焦退回文档流」那一套（见上面的 .kbd-flow） */
+  #composer.kbd-flow { position: absolute; }
   #input { height: 66px; min-height: 0; max-height: none; }
   .composer-actions .btn-newline { display: none; }
+  .edit-btn { min-height: 0; min-width: 0; margin-top: -4px; padding: 2px 8px; font-size: 12px; }
+  .edit-cancel { min-height: 0; min-width: 0; }
+  .edit-text { max-width: 70%; }
 
   .btn { min-height: 0; padding: 5px 10px; font-size: 13px; }
   .btn-block { margin-top: 6px; }
@@ -556,6 +601,10 @@ html.dark .note { color: #8f97a3; }
 html.dark #main { background: #16181c; }
 html.dark #messages { background: #16181c; }
 html.dark #composer { background: #1e2126; border-top-color: #33373d; }
+html.dark .edit-bar { background: #212a36; border-color: #37475c; }
+html.dark .edit-text { color: #a8c2e0; }
+html.dark .edit-cancel,
+html.dark .edit-btn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
 
 html.dark .msg-body { background: #23272e; border-color: #383d45; }
 html.dark .msg.assistant .msg-body { background: #23272e; }
