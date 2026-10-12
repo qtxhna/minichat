@@ -1028,6 +1028,15 @@
     return b;
   }
 
+  /* 「重试」按钮：挂在最后一条出错（或被中断）的消息上 */
+  function makeRetryButton() {
+    var b = el("button", "btn retry-btn", "重试");
+    b.type = "button";
+    b.title = "把上一条提问重新发一次";
+    b.onclick = function () { retryLast(); };
+    return b;
+  }
+
   function renderMessages() {
     var box = $("messages");
     var conv = getCurrent();
@@ -1051,6 +1060,11 @@
       /* 只有最后一条用户消息能编辑重发；正在等待回答时不显示，避免状态打架 */
       if (i === lastUser && !busy && editingIndex < 0) {
         head.appendChild(makeEditButton(i));
+      }
+      /* 最后一条是错误气泡（或被中断的回答）时，给一个一键重试 */
+      if (i === conv.messages.length - 1 && !busy && editingIndex < 0 && lastUser >= 0 &&
+          (m.role === "error" || m.skip)) {
+        head.appendChild(makeRetryButton());
       }
       wrap.appendChild(head);
 
@@ -1260,6 +1274,26 @@
       return true;
     }
     return false;
+  }
+
+  /* 一键重试：把最后一条提问原样再发一次。
+     实现上就是「编辑这条 + 重发」，复用同一套截断/发送流程，行为完全一致
+     （402 欠费充值后、或者中途断了，点一下就行，不用重新打一遍字）。 */
+  function retryLast() {
+    if (busy) { return; }
+    var conv = getCurrent();
+    var idx = lastUserIndex(conv);
+    if (idx < 0) { return; }
+    var text = conv.messages[idx].content;
+    if (!trim(text)) { return; }
+    editingIndex = idx;
+    $("input").value = text;
+    send();
+    /* send() 可能提前返回（例如 Key 没填），那就别留下奇怪的编辑态 */
+    if (editingIndex >= 0) {
+      editingIndex = -1;
+      renderEditBar();
+    }
   }
 
   function addMessage(conv, role, content, reasoning) {

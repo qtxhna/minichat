@@ -1073,6 +1073,72 @@ window.setTimeout(function () {
   check("新建对话后编辑状态清空", byId.editBar.className === "edit-bar" && byId.input.value === "" &&
     byId.send.childNodes[0].textContent === "发送", byId.editBar.className + "/" + byId.input.value);
 
+  console.log("\n[20] 出错后一键重试");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  loadApp();
+  byId.apiKey.value = "sk-retry";
+  byId.saveSettings.onclick();
+
+  /* 402 欠费：错误气泡上应该出现「重试」 */
+  byId.input.value = "欠费时发的这条";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var payXhr = lastXhr;
+  payXhr.respond(402, JSON.stringify({ error: { message: "Insufficient Balance" } }));
+  check("错误气泡出现", byId.messages.childNodes[1].className.indexOf("error") !== -1,
+    byId.messages.childNodes[1].className);
+  check("错误气泡上有「重试」", collectClass(byId.messages, "retry-btn").length === 1);
+  check("「重试」挂在错误气泡上",
+    collectClass(byId.messages, "retry-btn")[0].parentNode === byId.messages.childNodes[1].childNodes[0]);
+  check("用户气泡上同时有「编辑」", collectClass(byId.messages, "edit-btn").length === 1);
+  check("重试前按钮是「发送」", byId.send.childNodes[0].textContent === "发送", byId.send.childNodes[0].textContent);
+
+  collectClass(byId.messages, "retry-btn")[0].onclick();
+  var retrySent = JSON.parse(lastXhr.body).messages;
+  var histRetry = [], kr;
+  for (kr = 0; kr < retrySent.length; kr++) { if (retrySent[kr].role !== "system") { histRetry.push(retrySent[kr]); } }
+  check("重试发出的是同一条提问（不重复、不带错误）",
+    histRetry.length === 1 && histRetry[0].content === "欠费时发的这条", JSON.stringify(histRetry));
+  check("错误气泡被换掉了", byId.messages.childNodes.length === 2 &&
+    byId.messages.childNodes[0].className.indexOf("msg user") !== -1 &&
+    byId.messages.childNodes[1].className.indexOf("pending") !== -1, repr(byId.messages));
+  check("重试期间没有「重试」按钮", collectClass(byId.messages, "retry-btn").length === 0);
+  check("重试期间按钮是「停止」", byId.send.childNodes[0].textContent === "停止", byId.send.childNodes[0].textContent);
+  check("重试后输入框是空的", byId.input.value === "", byId.input.value);
+
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "这次成功了" } }] }));
+  check("重试成功后正常显示回答", textOf(byId.messages).indexOf("这次成功了") > -1, textOf(byId.messages));
+  check("成功之后不再有「重试」", collectClass(byId.messages, "retry-btn").length === 0);
+  check("重试没有把提问变成两条", (function () {
+    var saved = JSON.parse(lsData["minichat.conversations.v1"]), ci, n = 0;
+    for (ci = 0; ci < saved[0].messages.length; ci++) {
+      if (saved[0].messages[ci].role === "user") { n++; }
+    }
+    return n === 1 && saved[0].messages.length === 2;
+  })(), lsData["minichat.conversations.v1"]);
+
+  /* 手动「停止」留下的半截回答，也可以一键重试 */
+  byId.input.value = "会被停掉的问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n");
+  byId.send.onclick();                       /* 忙 → 触发停止 */
+  check("停止后的半截回答也有「重试」", collectClass(byId.messages, "retry-btn").length === 1);
+  collectClass(byId.messages, "retry-btn")[0].onclick();
+  var histStop = (function () {
+    var all = JSON.parse(lastXhr.body).messages, out = [], ks;
+    for (ks = 0; ks < all.length; ks++) { if (all[ks].role !== "system") { out.push(all[ks]); } }
+    return out;
+  })();
+  check("停止后重试重发同一条提问，且不重复也不带半截回答",
+    histStop.length === 3 && histStop[histStop.length - 1].content === "会被停掉的问题" &&
+    JSON.stringify(histStop).indexOf("半截") === -1, JSON.stringify(histStop));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "这次没被停" } }] }));
+  check("停止后重试成功显示回答", textOf(byId.messages).indexOf("这次没被停") > -1, textOf(byId.messages));
+
+  /* 正常回答结尾不该有「重试」 */
+  check("正常回答结尾没有「重试」", collectClass(byId.messages, "retry-btn").length === 0);
+
   report();
 }, 300);
 

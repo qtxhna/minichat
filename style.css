@@ -309,9 +309,10 @@ textarea { resize: none; }
 .msg-head { font-size: 11px; color: #888; margin-bottom: 3px; }
 .msg-head:after { content: ""; display: table; clear: both; }
 
-/* 「编辑」：只出现在最后一条用户消息上，点了就把内容放回输入框重发。
-   min-height 给到 32px，够手指点，又不至于把气泡顶得太开。 */
-.edit-btn {
+/* 「编辑」/「重试」：只出现在最后一条相关气泡上，min-height 给到 32px，
+   够手指点，又不至于把气泡顶得太开。 */
+.edit-btn,
+.retry-btn {
   float: right;
   min-height: 32px;
   min-width: 60px;
@@ -539,7 +540,8 @@ textarea { resize: none; }
   #composer.kbd-flow { position: absolute; }
   #input { height: 66px; min-height: 0; max-height: none; }
   .composer-actions .btn-newline { display: none; }
-  .edit-btn { min-height: 0; min-width: 0; margin-top: -4px; padding: 2px 8px; font-size: 12px; }
+  .edit-btn,
+  .retry-btn { min-height: 0; min-width: 0; margin-top: -4px; padding: 2px 8px; font-size: 12px; }
   .edit-cancel { min-height: 0; min-width: 0; }
   .edit-text { max-width: 70%; }
 
@@ -604,7 +606,8 @@ html.dark #composer { background: #1e2126; border-top-color: #33373d; }
 html.dark .edit-bar { background: #212a36; border-color: #37475c; }
 html.dark .edit-text { color: #a8c2e0; }
 html.dark .edit-cancel,
-html.dark .edit-btn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+html.dark .edit-btn,
+html.dark .retry-btn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
 
 html.dark .msg-body { background: #23272e; border-color: #383d45; }
 html.dark .msg.assistant .msg-body { background: #23272e; }
