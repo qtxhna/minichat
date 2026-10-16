@@ -279,8 +279,18 @@ textarea { resize: none; }
 
 .composer-actions { margin-top: 8px; }
 .composer-actions .btn { float: right; margin-left: 8px; }
-.composer-actions .btn-newline { float: left; min-width: 76px; background: #fff; }
 .composer-actions .btn-img { float: left; min-width: 76px; margin-left: 8px; background: #fff; }
+/* 思考强度下拉：跟按钮同排，右浮动贴在「发送」左边。
+   基础样式里的 select 是 width:100% + 16px 字，这里必须收窄收小。 */
+.composer-actions select {
+  float: right;
+  width: auto;
+  max-width: 40%;
+  min-height: 44px;              /* 跟手机上的按钮一样高，好点 */
+  margin-left: 8px;
+  padding: 4px 6px;
+  font-size: 15px;
+}
 .composer-actions:after { content: ""; display: table; clear: both; }
 #hint { display: none; }   /* 手机上不占地方 */
 
@@ -634,11 +644,11 @@ textarea { resize: none; }
   /* 桌面端不玩「聚焦退回文档流」那一套（见上面的 .kbd-flow） */
   #composer.kbd-flow { position: absolute; }
   #input { height: 66px; min-height: 0; max-height: none; }
-  .composer-actions .btn-newline { display: none; }
   .edit-btn,
   .retry-btn { min-height: 0; min-width: 0; margin-top: -4px; padding: 2px 8px; font-size: 12px; }
   .edit-cancel { min-height: 0; min-width: 0; }
   .composer-actions .btn-img { min-height: 0; min-width: 60px; padding: 5px 8px; font-size: 13px; }
+  .composer-actions select { min-height: 0; padding: 4px 6px; font-size: 13px; }
   .edit-text { max-width: 70%; }
 
   .btn { min-height: 0; padding: 5px 10px; font-size: 13px; }

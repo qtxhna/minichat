@@ -76,15 +76,6 @@
           <option value="deepseek-reasoner">deepseek-reasoner（旧名）</option>
         </select>
 
-        <label for="effortSel">思考强度</label>
-        <select id="effortSel">
-          <option value="none">关闭思考（最快）</option>
-          <option value="low">低</option>
-          <option value="high">高（默认）</option>
-          <option value="max">最高（最慢）</option>
-        </select>
-        <div class="note">思考模式会先想一段再回答；思考过程在气泡上方，默认收起，点一下展开。关掉后更快，但复杂问题会差一些。</div>
-
         <label for="systemPrompt">系统提示词（可留空）</label>
         <textarea id="systemPrompt" rows="2" spellcheck="false" placeholder="例如：你是一个简洁的助手"></textarea>
 
@@ -127,14 +118,22 @@
       </div>
       <!-- 待发送的图片（缩略图，点 ✕ 移除），平时隐藏 -->
       <div id="attachBar" class="attach-bar"></div>
-      <textarea id="input" rows="3" spellcheck="false" enterkeyhint="send"
-        placeholder="在这里输入消息…（手机上按键盘的发送键，电脑上按 Enter 发送）"></textarea>
+      <textarea id="input" rows="3" spellcheck="false" enterkeyhint="enter"
+        placeholder="在这里输入消息…（回车换行，点「发送」按钮发送）"></textarea>
       <div class="composer-actions">
-        <!-- 手机键盘没有 Shift，用这个按钮插入换行；桌面端隐藏（用 Shift+Enter 即可） -->
-        <button type="button" id="newlineBtn" class="btn btn-newline">↵ 换行</button>
+        <!-- 右浮动按文档顺序从右往左排：先写的贴最右。
+             所以这里把「发送」写在「思考」前面，视觉上才是 [思考][发送]，
+             发送仍在最右下角，拇指最容易够到。 -->
         <button type="button" id="imgBtn" class="btn btn-img" title="发送图片（只有 deepseek-flash 支持）">图片</button>
         <button type="button" id="send" class="btn btn-primary">发送</button>
-        <span id="hint" class="note">回答支持基础 Markdown 排版（可在「设置」里关掉）。</span>
+        <!-- 思考强度：从设置里搬出来，放发送旁边，随手可调，改完立刻生效 -->
+        <select id="effortSel" class="effort-sel" title="思考强度：关掉最快，最高最慢">
+          <option value="none">思考：关</option>
+          <option value="low">思考：低</option>
+          <option value="high">思考：高</option>
+          <option value="max">思考：最高</option>
+        </select>
+        <span id="hint" class="note">回车换行，点「发送」按钮发送。回答支持基础 Markdown 排版（可在「设置」里关掉）。</span>
       </div>
       <input type="file" id="imgFile" accept="image/*" multiple style="display:none">
     </div>

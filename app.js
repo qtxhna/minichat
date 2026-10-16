@@ -2388,31 +2388,12 @@
     updateToBottom();
   }
 
-  /* 手机键盘没有 Shift+Enter，用它插入换行 */
-  function insertNewline() {
-    var ta = $("input");
-    var start = null, end = null;
-    try {
-      start = ta.selectionStart;
-      end = ta.selectionEnd;
-    } catch (e) { /* 老浏览器取不到光标位置 */ }
-
-    if (typeof start !== "number" || typeof end !== "number") {
-      ta.value = ta.value + "\n";
-    } else {
-      ta.value = ta.value.substring(0, start) + "\n" + ta.value.substring(end);
-      try { ta.selectionStart = ta.selectionEnd = start + 1; } catch (e2) { /* 忽略 */ }
-    }
-    ta.focus();
-  }
-
   /* ----------------------------- 事件绑定 ------------------------------- */
 
   function bindEvents() {
     $("send").onclick = send;
     $("menuBtn").onclick = toggleDrawer;
     $("overlay").onclick = closeDrawer;
-    $("newlineBtn").onclick = insertNewline;
     $("settingsHead").onclick = toggleSettings;
 
     /* 深色 / 浅色：顶栏一键切换（浅↔深），侧栏可选「跟随系统」 */
@@ -2476,16 +2457,9 @@
       };
     }
 
-    $("input").onkeydown = function (e) {
-      e = e || window.event;
-      var code = e.keyCode || e.which;
-      /* 中文输入法组合期间不发送 */
-      if (e.isComposing === true || code === 229) { return; }
-      if (code === 13 && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (e.preventDefault) { e.preventDefault(); }
-        send();
-      }
-    };
+    /* 回车不发送：textarea 的默认行为就是在光标处插入换行，
+       所以这里刻意不绑定 onkeydown，不去 preventDefault。
+       发送只有「发送」按钮一条路径（编辑提问后用 Ctrl/⌘+回车也没有加速键）。 */
 
     /* 选图片：不支持 FileReader 的老浏览器就别显示这个按钮了 */
     if (!window.FileReader || !$("imgBtn")) {

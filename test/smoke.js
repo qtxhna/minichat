@@ -89,7 +89,7 @@ var byId = {};
 ["apiKey", "rememberKey", "saveSettings", "model", "systemPrompt", "baseUrl",
  "newChat", "clearChat", "convList", "storeNote", "convTitle", "status",
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
- "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
+ "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
  "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel", "effortSel",
  "attachBar", "imgBtn", "imgFile",
@@ -210,7 +210,7 @@ function repr(node) {
 /* 走真实链路：发一条消息 → 用假回答填充 → 取出这条回答的 .msg-body */
 function renderAssistant(mdText) {
   byId.input.value = "让我看看";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: mdText } }] }));
   var msgs = byId.messages.childNodes;
   return msgs[msgs.length - 1].childNodes[1];
@@ -285,7 +285,7 @@ check("系统提示词已保存", saved.systemPrompt === "你是简洁的助手"
 
 console.log("\n[3] 发送消息（Enter 键）→ 请求内容");
 byId.input.value = "你好，介绍一下你自己";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 check("已发起 XHR", !!lastXhr);
 check("URL 去掉了末尾斜杠", lastXhr.url === "https://api.deepseek.com/chat/completions", lastXhr.url);
 check("使用 POST", lastXhr.method === "POST");
@@ -316,7 +316,7 @@ check("消息已落盘", /DeepSeek/.test(lsData["minichat.conversations.v1"]));
 
 console.log("\n[5] 错误处理（401）");
 byId.input.value = "再来一次";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 lastXhr.respond(401, JSON.stringify({ error: { message: "Authentication Fails" } }));
 var lastMsg2 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
 check("错误气泡出现", lastMsg2.className.indexOf("error") !== -1, lastMsg2.className);
@@ -326,7 +326,7 @@ check("错误文案含 401 与原始信息",
 
 /* 错误之后继续发，确认错误提示没有被当成上下文发回给接口 */
 byId.input.value = "错误之后继续";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 var afterErr = JSON.parse(lastXhr.body);
 check("错误提示没有进入上下文", JSON.stringify(afterErr.messages).indexOf("Authentication Fails") === -1);
 var rolesOk = true, ri;
@@ -339,14 +339,14 @@ lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好的" }
 
 /* 超过上下文长度也是 400，提示里要直接给出可操作的办法 */
 byId.input.value = "太长了";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 lastXhr.respond(400, JSON.stringify({ error: { message: "This model's maximum context length is 1048576 tokens." } }));
 var lastMsg3 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
 var errText = lastMsg3.childNodes[1].childNodes[0].textContent;
 check("上下文超长给出明确提示", /超出上下文长度/.test(errText), errText);
 check("同时保留接口原文", /maximum context length/.test(errText), errText);
 byId.input.value = "普通 400";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 lastXhr.respond(400, JSON.stringify({ error: { message: "bad request" } }));
 var errText2 = byId.messages.childNodes[byId.messages.childNodes.length - 1].childNodes[1].childNodes[0].textContent;
 check("其他 400 不误报为上下文超长", /请求格式错误/.test(errText2) && !/超出上下文长度/.test(errText2), errText2);
@@ -356,7 +356,7 @@ byId.newChat.onclick();
 check("新建后有 2 个对话", byId.convList.childNodes.length === 2);
 check("新对话是空的", byId.messages.childNodes.length === 1);
 byId.input.value = "第二个对话的消息";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "收到" } }] }));
 check("第二条对话有 2 条消息", byId.messages.childNodes.length === 2);
 
@@ -395,17 +395,32 @@ check("给出无痕模式提示", /本地存储/.test(byId.storeNote.childNodes.
 byId.apiKey.value = "sk-mem";
 byId.saveSettings.onclick();
 byId.input.value = "内存模式测试";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
 check("内存模式下仍能完成一轮对话", byId.messages.childNodes.length === 2);
 
-console.log("\n[9] 输入法组合期间不误发送");
+console.log("\n[9] 回车只换行，发送只有按钮一条路");
 var xhrBefore = lastXhr;
-byId.input.value = "组合中";
-byId.input.onkeydown({ keyCode: 229, shiftKey: false, preventDefault: function () {} });
-check("keyCode 229 不发送", lastXhr === xhrBefore);
-byId.input.onkeydown({ keyCode: 13, shiftKey: true, preventDefault: function () {} });
-check("Shift+Enter 不发送", lastXhr === xhrBefore);
+var msgsBefore = byId.messages.childNodes.length;
+byId.input.value = "不发送";
+/* 关键：app.js 不该再拦截输入框的 keydown，回车交给 textarea 的默认行为 */
+check("输入框没有绑定 keydown（回车不再被拦成发送）", !byId.input.onkeydown, String(byId.input.onkeydown));
+byId.send.onclick();
+check("点「发送」仍然照常发出", lastXhr !== xhrBefore);
+lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+check("按钮发送的这轮能正常落库", byId.messages.childNodes.length === msgsBefore + 2,
+  byId.messages.childNodes.length + " vs " + (msgsBefore + 2));
+check("换行按钮已移除", !byId.newlineBtn, String(byId.newlineBtn));
+
+/* 结构回归：思考强度下拉必须在输入框下面那一排（#composer 内），不在设置里 */
+var fs = require("fs");
+var html = fs.readFileSync(__dirname + "/../index.html", "utf8");
+var inComposer = /<div id="composer">[\s\S]*<select id="effortSel"[\s\S]*?<\/div>\s*<input type="file" id="imgFile"/.test(html);
+check("思考强度下拉在 #composer 里", inComposer);
+check("设置里已经没有思考强度", html.indexOf('<label for="effortSel">') === -1);
+check("下拉排在「发送」按钮之后（右浮动下才会显示在发送左边）",
+  html.indexOf('id="send"') < html.indexOf('id="effortSel"'));
+check("输入框不再提示按回车发送", html.indexOf("回车换行") !== -1 && html.indexOf("按 Enter 发送") === -1);
 
 console.log("\n[10] 存储配额不足时自动裁剪");
 lsData = {};
@@ -414,7 +429,7 @@ loadApp();
 byId.apiKey.value = "sk-q"; byId.saveSettings.onclick();
 lsQuota = 1200; /* 逼出配额错误 */
 var i;
-for (i = 0; i < 12; i++) { byId.newChat.onclick(); byId.input.value = "填充消息 " + i + " " + new Array(30).join("x"); byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} }); lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "回复" } }] })); }
+for (i = 0; i < 12; i++) { byId.newChat.onclick(); byId.input.value = "填充消息 " + i + " " + new Array(30).join("x"); byId.send.onclick(); lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "回复" } }] })); }
 check("配额受限时未崩溃，仍能保存", !!lsData["minichat.conversations.v1"]);
 check("存储体积被控制在配额内", (lsData["minichat.conversations.v1"] || "").length <= lsQuota);
 
@@ -426,7 +441,7 @@ loadApp();
 byId.apiKey.value = "sk-typed-but-not-saved";
 byId.model.value = "deepseek-chat";
 byId.input.value = "没点保存就发送";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 check("仍然发出了请求", !!lastXhr && lastXhr.headers["Authorization"] === "Bearer sk-typed-but-not-saved",
   lastXhr ? lastXhr.headers["Authorization"] : "no xhr");
 check("未保存的模型选择也生效", JSON.parse(lastXhr.body).model === "deepseek-chat");
@@ -455,13 +470,13 @@ byId.overlay.onclick();
 check("点遮罩关闭抽屉", byId.sidebar.className === "" && byId.overlay.className === "");
 
 byId.input.value = "没填 key 就发";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 check("没填 Key 时自动打开设置抽屉", byId.sidebar.className === "open" && byId.overlay.className === "open");
 
 byId.apiKey.value = "sk-mobile";
 byId.saveSettings.onclick();
 byId.input.value = "手机端消息";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 check("手机端能正常发送", !!lastXhr && /手机端消息/.test(lastXhr.body));
 scrollCalls = [];
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "手机端回答" } }] }));
@@ -469,7 +484,7 @@ check("人在底部时，回答会自动滚出来", scrollCalls.length > 0, Stri
 
 /* 用户翻上去看历史时，新回答不能把他硬拽回底部 */
 byId.input.value = "第二条";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 window.pageYOffset = 0;                    /* 模拟用户往上翻 */
 scrollCalls = [];
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第二条回答" } }] }));
@@ -479,13 +494,6 @@ byId.menuBtn.onclick();
 byId.newChat.onclick();
 check("新建对话后抽屉自动关闭", byId.sidebar.className === "");
 check("新建对话后显示空态", byId.messages.childNodes.length === 1);
-
-byId.input.value = "第一行";
-byId.input.selectionStart = 2;
-byId.input.selectionEnd = 2;
-byId.newlineBtn.onclick();
-check("换行按钮在光标处插入换行", byId.input.value === "第一\n行", JSON.stringify(byId.input.value));
-check("换行后光标落到下一行开头", byId.input.selectionStart === 3, byId.input.selectionStart);
 
 window.pageYOffset = 0;                 /* 距底部 600px，较远 */
 byId.toBottom.style.display = "";
@@ -592,7 +600,7 @@ loadApp();
 byId.settingsHead.onclick();
 check("先手动收起", byId.settingsBody.style.display === "none", byId.settingsBody.style.display);
 byId.input.value = "还没填 key";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 check("没填 Key 时发送会强制展开设置", byId.settingsBody.style.display === "block", byId.settingsBody.style.display);
 check("并且给出需要填 Key 的提示",
   /API Key/.test(byId.status.childNodes.map(function (n) { return n.textContent; }).join("")));
@@ -747,7 +755,7 @@ check("重新打开后恢复排版", mdRepr("**粗体**") === "p(strong(粗体))
 
 /* 用户自己发的消息不做排版 */
 byId.input.value = "**我不是粗体**";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 var allMsgs = byId.messages.childNodes;
 check("用户消息保持原样", kidsRepr(allMsgs[allMsgs.length - 2].childNodes[1]) === "**我不是粗体**",
   kidsRepr(allMsgs[allMsgs.length - 2].childNodes[1]));
@@ -764,7 +772,7 @@ byId.saveSettings.onclick();
 check("默认开启流式", byId.streamEnabled.checked === true && JSON.parse(lsData["minichat.settings.v1"]).streaming === true);
 
 byId.input.value = "讲个长的";
-byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+byId.send.onclick();
 var req16 = lastXhr;
 check("请求体里带上了 stream:true", JSON.parse(req16.body).stream === true);
 check("流式时用空闲超时而不是整体超时（否则长回答会被砍）", req16.timeout === 0, String(req16.timeout));
@@ -808,14 +816,14 @@ window.setTimeout(function () {
 
   /* 降级 1：浏览器一个增量都不给，接口回整段 JSON（比如代理不支持流式） */
   byId.input.value = "降级 1";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "整段回来的回答" } }] }));
   var d1 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
   check("收不到增量时自动按非流式解析", textOf(d1.childNodes[1]) === "整段回来的回答", textOf(d1.childNodes[1]));
 
   /* 降级 2：增量一直没给，直到收尾才拿到完整的 SSE */
   byId.input.value = "降级 2";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.finish(200, "data: {\"choices\":[{\"delta\":{\"content\":\"缓存到\"}}]}\n\n" +
                       "data: {\"choices\":[{\"delta\":{\"content\":\"最后\"}}]}\n\ndata: [DONE]\n\n");
   var d2 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
@@ -823,7 +831,7 @@ window.setTimeout(function () {
 
   /* 多字节汉字被分块切断：末尾的 U+FFFD 先扣住不消费 */
   byId.input.value = "断字";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var req17 = lastXhr;
   req17.responseText = "data: {\"choices\":[{\"delta\":{\"content\":\"中\ufffd";
   req17.readyState = 3;
@@ -837,7 +845,7 @@ window.setTimeout(function () {
 
   /* 流到一半报错：已生成的部分要保留 */
   byId.input.value = "中途出错";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"已经写了一半\"}}]}\n\n");
   lastXhr.finish(402, "{\"error\":{\"message\":\"Insufficient Balance\"}}");
   var d4 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
@@ -847,7 +855,7 @@ window.setTimeout(function () {
 
   /* 停止：保留已经生成的部分 */
   byId.input.value = "要停的";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"半截话\"}}]}\n\n");
   byId.send.onclick();                       /* 正在忙 → 触发停止 */
   var d5 = byId.messages.childNodes[byId.messages.childNodes.length - 1];
@@ -859,7 +867,7 @@ window.setTimeout(function () {
   byId.streamEnabled.checked = false;
   byId.streamEnabled.onchange();
   byId.input.value = "非流式";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   check("关掉后请求 stream:false", JSON.parse(lastXhr.body).stream === false);
   check("关掉后恢复整体超时", lastXhr.timeout === 300000, String(lastXhr.timeout));
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "非流式回答" } }] }));
@@ -890,7 +898,7 @@ window.setTimeout(function () {
   }
   function ask17(text) {
     byId.input.value = text;
-    byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+    byId.send.onclick();
     var ms = msgsOf(lastXhr);
     var t = payloadTokens17(ms);
     if (t > peak17) { peak17 = t; }
@@ -996,7 +1004,7 @@ window.setTimeout(function () {
   byId.apiKey.value = "sk-fixed";
   byId.saveSettings.onclick();
   byId.input.value = "试试固定输入框";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
   check("回答之后底部留白依然在", byId.messages.style.paddingBottom === "172px", byId.messages.style.paddingBottom);
 
@@ -1017,7 +1025,7 @@ window.setTimeout(function () {
   byId.saveSettings.onclick();
 
   byId.input.value = "第一个问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第一个回答" } }] }));
   check("只有最后一条用户消息带「编辑」", collectClass(byId.messages, "edit-btn").length === 1);
   check("「编辑」挂在用户气泡的头部",
@@ -1030,7 +1038,7 @@ window.setTimeout(function () {
   check("编辑期间那条不再显示「编辑」", collectClass(byId.messages, "edit-btn").length === 0);
 
   byId.input.value = "改过的问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var sentEdit = JSON.parse(lastXhr.body).messages;
   var histEdit = [], ke;
   for (ke = 0; ke < sentEdit.length; ke++) { if (sentEdit[ke].role !== "system") { histEdit.push(sentEdit[ke]); } }
@@ -1062,14 +1070,14 @@ window.setTimeout(function () {
   /* 编辑成空白：不许发，也不许把消息弄丢 */
   collectClass(byId.messages, "edit-btn")[0].onclick();
   byId.input.value = "   ";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   check("编辑成空白时不发送也不丢消息", byId.messages.childNodes.length === 2 &&
     byId.editBar.className === "edit-bar on", byId.messages.childNodes.length + "");
   byId.editCancel.onclick();
 
   /* 两条提问时，仍然只有最后一条能编辑 */
   byId.input.value = "第二个问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第二个回答" } }] }));
   check("两条提问时也只有一个「编辑」", collectClass(byId.messages, "edit-btn").length === 1);
   check("「编辑」在最后一条用户消息（第 3 个气泡）上",
@@ -1077,7 +1085,7 @@ window.setTimeout(function () {
 
   /* 等待回答期间不给编辑 */
   byId.input.value = "第三个问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   check("等待回答时没有「编辑」按钮", collectClass(byId.messages, "edit-btn").length === 0);
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第三个回答" } }] }));
 
@@ -1101,7 +1109,7 @@ window.setTimeout(function () {
 
   /* 402 欠费：错误气泡上应该出现「重试」 */
   byId.input.value = "欠费时发的这条";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var payXhr = lastXhr;
   payXhr.respond(402, JSON.stringify({ error: { message: "Insufficient Balance" } }));
   check("错误气泡出现", byId.messages.childNodes[1].className.indexOf("error") !== -1,
@@ -1138,7 +1146,7 @@ window.setTimeout(function () {
 
   /* 手动「停止」留下的半截回答，也可以一键重试 */
   byId.input.value = "会被停掉的问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.chunk("data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n");
   byId.send.onclick();                       /* 忙 → 触发停止 */
   check("停止后的半截回答也有「重试」", collectClass(byId.messages, "retry-btn").length === 1);
@@ -1167,10 +1175,10 @@ window.setTimeout(function () {
 
   /* 先造一段有两个来回的对话 */
   byId.input.value = "第一个问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第一个回答", reasoning_content: "想了下" } }] }));
   byId.input.value = "第二个问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第二个回答" } }] }));
   check("准备了两轮对话", byId.messages.childNodes.length === 4, byId.messages.childNodes.length + "");
 
@@ -1261,7 +1269,7 @@ window.setTimeout(function () {
   check("标题从第一条提问推导", byId.convTitle.childNodes[0].textContent === "老问题",
     byId.convTitle.childNodes[0].textContent);
   byId.input.value = "继续问";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var ioPayload = (function () {
     var all = JSON.parse(lastXhr.body).messages, out = [], ki;
     for (ki = 0; ki < all.length; ki++) { if (all[ki].role !== "system") { out.push(all[ki].content); } }
@@ -1317,7 +1325,7 @@ window.setTimeout(function () {
   byId.saveSettings.onclick();
 
   byId.input.value = "带思考的问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var bEffort = JSON.parse(lastXhr.body);
   check("请求体 model 用的是新模型名", bEffort.model === "deepseek-flash", bEffort.model);
   check("请求带上 thinking.enabled", bEffort.thinking && bEffort.thinking.type === "enabled",
@@ -1334,7 +1342,7 @@ window.setTimeout(function () {
     lsData["minichat.settings.v1"]);
   check("关掉思考有状态提示", /关闭思考/.test(textOf(byId.status)), textOf(byId.status));
   byId.input.value = "不用想的问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var bOff = JSON.parse(lastXhr.body);
   check("关掉后 thinking.disabled", bOff.thinking && bOff.thinking.type === "disabled", JSON.stringify(bOff.thinking));
   check("关掉后 reasoning_effort 是 none", bOff.reasoning_effort === "none", String(bOff.reasoning_effort));
@@ -1346,7 +1354,7 @@ window.setTimeout(function () {
   byId.effortSel.value = "max";
   byId.effortSel.onchange();
   byId.input.value = "难一点的问题";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var bMax = JSON.parse(lastXhr.body);
   check("最高档原样传给接口", bMax.reasoning_effort === "max" && bMax.thinking.type === "enabled",
     bMax.reasoning_effort + "/" + bMax.thinking.type);
@@ -1403,7 +1411,7 @@ window.setTimeout(function () {
 
   /* 带图发送：user 消息的 content 要是块数组 */
   byId.input.value = "这张图里有什么？";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var imgPayload = JSON.parse(lastXhr.body).messages;
   var lastMsg = imgPayload[imgPayload.length - 1];
   check("带图的消息 content 是块数组", lastMsg.role === "user" && Object.prototype.toString.call(lastMsg.content) === "[object Array]",
@@ -1429,7 +1437,7 @@ window.setTimeout(function () {
   byId.imgFile.files = [{ name: "b.png", size: 2048 }];
   byId.imgFile.onchange();
   byId.input.value = "";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var onlyImg = JSON.parse(lastXhr.body).messages;
   var lastOnly = onlyImg[onlyImg.length - 1];
   check("可以只发图片", lastOnly.content.length === 1 && lastOnly.content[0].type === "image_url",
@@ -1469,7 +1477,7 @@ window.setTimeout(function () {
   byId.attachBar.childNodes[0].childNodes[1].onclick();
   check("点 ✕ 移除一张", byId.attachBar.childNodes.length === 1, byId.attachBar.childNodes.length + "");
   byId.input.value = "只带第二张";
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   var oneImg = JSON.parse(lastXhr.body).messages;
   check("移除的那张不会发出去", oneImg[oneImg.length - 1].content.length === 2,
     JSON.stringify(oneImg[oneImg.length - 1].content).length + "");
@@ -1516,7 +1524,7 @@ window.setTimeout(function () {
   byId.input.value = "带图的问题";
   byId.imgFile.files = [{ size: 1 }];
   byId.imgFile.onchange();
-  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  byId.send.onclick();
   lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "回答" } }] }));
   check("发送后缩略图清空", byId.attachBar.childNodes.length === 0);
   collectClass(byId.messages, "edit-btn")[0].onclick();
