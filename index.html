@@ -70,9 +70,20 @@
 
         <label for="model">模型</label>
         <select id="model">
-          <option value="deepseek-chat">deepseek-chat</option>
-          <option value="deepseek-reasoner">deepseek-reasoner</option>
+          <option value="deepseek-flash">deepseek-flash（默认）</option>
+          <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+          <option value="deepseek-chat">deepseek-chat（旧名）</option>
+          <option value="deepseek-reasoner">deepseek-reasoner（旧名）</option>
         </select>
+
+        <label for="effortSel">思考强度</label>
+        <select id="effortSel">
+          <option value="none">关闭思考（最快）</option>
+          <option value="low">低</option>
+          <option value="high">高（默认）</option>
+          <option value="max">最高（最慢）</option>
+        </select>
+        <div class="note">思考模式会先想一段再回答；思考过程在气泡上方，默认收起，点一下展开。关掉后更快，但复杂问题会差一些。</div>
 
         <label for="systemPrompt">系统提示词（可留空）</label>
         <textarea id="systemPrompt" rows="2" spellcheck="false" placeholder="例如：你是一个简洁的助手"></textarea>

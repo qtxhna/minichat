@@ -35,15 +35,20 @@
 
   var DEFAULT_SETTINGS = {
     apiKey: "",
-    model: "deepseek-chat",
+    model: "deepseek-flash",
     baseUrl: "https://api.deepseek.com",
     systemPrompt: "",
     rememberKey: true,
     theme: "auto",         /* auto | light | dark */
     settingsOpen: null,    /* true/false = 用户手动选过；null = 自动（没填 Key 就展开） */
     mdEnabled: true,       /* 回答用 Markdown 排版 */
-    streaming: true        /* 流式输出（边生成边显示） */
+    streaming: true,       /* 流式输出（边生成边显示） */
+    reasoningEffort: "high" /* 思考强度：none / low / high / max（接口默认 high） */
   };
+
+  /* 思考强度：none 关掉思考模式，其余开启。接口还接受 minimal/medium/xhigh 这类
+     别名，这里只开放官方文档里列出的四个。 */
+  var REASONING_EFFORTS = { "none": 1, "low": 1, "high": 1, "max": 1 };
 
   /* ----------------------------- 存储层 --------------------------------- */
   /* localStorage 可用则用；不可用（无痕模式 / 被禁用）则退化为内存对象。  */
@@ -439,6 +444,7 @@
     if (s.settingsOpen !== true && s.settingsOpen !== false) { s.settingsOpen = null; }
     s.mdEnabled = (s.mdEnabled === false) ? false : true;
     s.streaming = (s.streaming === false) ? false : true;
+    if (!REASONING_EFFORTS[s.reasoningEffort]) { s.reasoningEffort = DEFAULT_SETTINGS.reasoningEffort; }
     return s;
   }
 
@@ -611,7 +617,8 @@
       theme: settings.theme,
       settingsOpen: settings.settingsOpen,
       mdEnabled: settings.mdEnabled,
-      streaming: settings.streaming
+      streaming: settings.streaming,
+      reasoningEffort: settings.reasoningEffort
     };
     storeSet(KEY_SETTINGS, JSON.stringify(toSave));
     storeSet(KEY_CURRENT, currentId || "");
@@ -1006,6 +1013,64 @@
     }
   }
 
+  /* ---------------------- 思考过程的显示 -------------------------------- */
+  /* 默认收起（想的时候自动摊开，正文一开始就收起来），点标题栏可以随时展开。
+     不占屏幕，也不丢内容 —— 手机上思考过程动辄几千字，摊开就没法看回答了。 */
+
+  function formatDuration(ms) {
+    var s = Math.round(ms / 1000);
+    if (s < 1) { s = 1; }
+    if (s < 60) { return s + " 秒"; }
+    var m = Math.floor(s / 60), r = s % 60;
+    return r ? (m + " 分 " + r + " 秒") : (m + " 分钟");
+  }
+
+  /* 该不该展开：用户手动点过就听用户的，否则「还在想」的时候自动展开 */
+  function thinkOpenByDefault(m) {
+    if (m.thinkOpen === true) { return true; }
+    if (m.thinkOpen === false) { return false; }
+    return !!(m.pending && !m.content);
+  }
+
+  function thinkLabel(m) {
+    /* 注意用 typeof 判断：同一毫秒内返回时 thinkMs 会是 0，那也是有效值 */
+    if (typeof m.thinkMs === "number") { return "思考过程 · " + formatDuration(m.thinkMs); }
+    if (m.pending && !m.content) { return "正在思考…"; }
+    return "思考过程";
+  }
+
+  function thinkSetOpen(box, open, m) {
+    var head = box.firstChild, body = box.lastChild;
+    body.style.display = open ? "" : "none";
+    clearNode(head.firstChild);
+    head.firstChild.appendChild(document.createTextNode(open ? "▾" : "▸"));
+    if (m) { m.thinkOpen = open; }
+  }
+
+  function thinkSetText(box, text) {
+    clearNode(box.lastChild);
+    box.lastChild.appendChild(document.createTextNode(text || ""));
+  }
+
+  function thinkSetLabel(box, text) {
+    var label = box.firstChild.lastChild;
+    clearNode(label);
+    label.appendChild(document.createTextNode(text));
+  }
+
+  function buildThink(m, open) {
+    var box = el("div", "think");
+    var head = el("div", "think-head");
+    head.appendChild(el("span", "think-caret", open ? "▾" : "▸"));
+    head.appendChild(el("span", "think-label", thinkLabel(m)));
+    var body = el("div", "think-body", m.reasoning || "");
+    if (!open) { body.style.display = "none"; }
+    head.onclick = function () { thinkSetOpen(box, body.style.display === "none", m); };
+    box.appendChild(head);
+    box.appendChild(body);
+    return box;
+  }
+
   /* 「编辑」按钮：下标直接闭包进去，不用事件委托那一套 */
   function makeEditButton(index) {
     var b = el("button", "btn edit-btn", "编辑");
@@ -1065,13 +1130,15 @@
       } else {
         body.appendChild(document.createTextNode(bodyText));
       }
+      /* 思考过程排在回答前面（先想后答），默认收起 */
+      if (m.reasoning) {
+        if (m === streamMsg) { streamReasoningEl = buildThink(m, thinkOpenByDefault(m)); }
+        wrap.appendChild(m === streamMsg ? streamReasoningEl : buildThink(m, thinkOpenByDefault(m)));
+      }
       /* 正在流式输出的那条，记住节点，之后只重画它一个 */
       if (m === streamMsg) { streamBody = body; }
       wrap.appendChild(body);
 
-      if (m.reasoning) {
-        wrap.appendChild(el("div", "reasoning", "思考过程：\n" + m.reasoning));
-      }
       box.appendChild(wrap);
     }
     afterRender();
@@ -1096,6 +1163,7 @@
     $("themeSel").value = settings.theme;
     $("mdEnabled").checked = settings.mdEnabled;
     $("streamEnabled").checked = settings.streaming;
+    $("effortSel").value = settings.reasoningEffort;
   }
 
   function readFormIntoSettings() {
@@ -1108,6 +1176,8 @@
     if (t === "dark" || t === "light" || t === "auto") { settings.theme = t; }
     settings.mdEnabled = !!$("mdEnabled").checked;
     settings.streaming = !!$("streamEnabled").checked;
+    var ef = $("effortSel").value;
+    if (REASONING_EFFORTS[ef]) { settings.reasoningEffort = ef; }
   }
 
   function updateStoreNote() {
@@ -1802,7 +1872,11 @@
       req.send(JSON.stringify({
         model: settings.model,
         messages: messages,
-        stream: streaming
+        stream: streaming,
+        /* 思考模式与强度：none 时用 thinking.disabled 明确关掉，
+           其余档位开启；两个参数都是接口文档里写明的写法。 */
+        thinking: { type: settings.reasoningEffort === "none" ? "disabled" : "enabled" },
+        reasoning_effort: settings.reasoningEffort
       }));
     } catch (e2) {
       fail("发送请求失败：" + (e2 && e2.message ? e2.message : "未知错误"));
@@ -1891,6 +1965,7 @@
     addMessage(conv, "assistant", "", "");
     var target = conv.messages[conv.messages.length - 1];
     target.pending = true;
+    target.reqStart = nowMs();            /* 用来算「思考了多久」 */
     streamMsg = target;                   /* 流式期间直接改这一个气泡，不整屏重画 */
 
     autoScroll = true;                    /* 自己发的消息，一定跟到底部 */
@@ -1914,7 +1989,10 @@
           gotFirstDelta = true;
           setStatus("");                  /* 文字开始长出来了，就不用再提示"正在生成" */
         }
-        if (contentDelta) { target.content += contentDelta; }
+        if (contentDelta) {
+          if (typeof target.thinkMs !== "number" && target.reqStart) { target.thinkMs = nowMs() - target.reqStart; }
+          target.content += contentDelta;
+        }
         if (reasoningDelta) { target.reasoning += reasoningDelta; }
         scheduleStreamRender();
       },
@@ -1930,6 +2008,9 @@
           target.pending = false;
           target.content = content || target.content || "（模型返回了空内容）";
           target.reasoning = reasoning || target.reasoning || "";
+          if (target.reasoning && typeof target.thinkMs !== "number" && target.reqStart) {
+            target.thinkMs = nowMs() - target.reqStart;
+          }
           target.ts = nowMs();
         }
         setBusy(false);
@@ -1982,14 +2063,22 @@
       streamBody.appendChild(document.createTextNode(text));
     }
 
-    /* 思考过程（deepseek-reasoner）边走边显示 */
+    /* 思考过程边走边显示：正文还没开始时摊开，正文一开始就收起来 */
     if (streamMsg.reasoning) {
       if (!streamReasoningEl || !streamReasoningEl.parentNode) {
-        streamReasoningEl = el("div", "reasoning");
-        if (streamBody.parentNode) { streamBody.parentNode.appendChild(streamReasoningEl); }
+        streamReasoningEl = buildThink(streamMsg, true);
+        if (streamBody.parentNode) { streamBody.parentNode.insertBefore(streamReasoningEl, streamBody); }
       }
-      while (streamReasoningEl.firstChild) { streamReasoningEl.removeChild(streamReasoningEl.firstChild); }
-      streamReasoningEl.appendChild(document.createTextNode("思考过程：\n" + streamMsg.reasoning));
+      thinkSetText(streamReasoningEl, streamMsg.reasoning);
+      if (text) {
+        if (typeof streamMsg.thinkMs !== "number" && streamMsg.reqStart) { streamMsg.thinkMs = nowMs() - streamMsg.reqStart; }
+        thinkSetLabel(streamReasoningEl, thinkLabel(streamMsg));
+        if (streamMsg.thinkOpen !== true && streamReasoningEl.lastChild.style.display !== "none") {
+          thinkSetOpen(streamReasoningEl, false, null);   /* 不写回 thinkOpen：这只是自动收起 */
+        }
+      } else {
+        thinkSetLabel(streamReasoningEl, thinkLabel(streamMsg));
+      }
     }
 
     if (stick) { scrollToBottom(); }
@@ -2032,6 +2121,13 @@
     $("themeSel").onchange = function () {
       setTheme($("themeSel").value);
       setStatus("外观已保存");
+    };
+    /* 思考强度：下次发送生效 */
+    $("effortSel").onchange = function () {
+      var ef = $("effortSel").value;
+      if (REASONING_EFFORTS[ef]) { settings.reasoningEffort = ef; }
+      persistSettings();
+      setStatus(ef === "none" ? "已关闭思考模式（下次发送生效）" : "思考强度已保存（下次发送生效）");
     };
     /* Markdown 开关：立刻重画，方便对比效果 */
     $("mdEnabled").onchange = function () {

@@ -56,6 +56,9 @@ function makeEl(tag) {
     onkeydown: null
   };
   Object.defineProperty(node, "firstChild", { get: function () { return node.childNodes[0] || null; } });
+  Object.defineProperty(node, "lastChild", {
+    get: function () { return node.childNodes[node.childNodes.length - 1] || null; }
+  });
   Object.defineProperty(node, "nextSibling", {
     get: function () {
       if (!node.parentNode) { return null; }
@@ -88,7 +91,7 @@ var byId = {};
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
- "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel",
+ "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel", "effortSel",
  "exportChat", "importChat", "ioPanel", "ioTitle", "ioHint", "ioText", "ioCopy", "ioDownload", "ioPick", "ioImport", "ioFile", "ioClose"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
@@ -212,6 +215,24 @@ function renderAssistant(mdText) {
   return msgs[msgs.length - 1].childNodes[1];
 }
 
+/* 气泡里的正文节点（思考过程在它上面，别再用固定下标） */
+function bodyOf(bubble) {
+  var i, k;
+  for (i = 0; i < bubble.childNodes.length; i++) {
+    k = bubble.childNodes[i];
+    if (k.className && k.className.indexOf("msg-body") !== -1) { return k; }
+  }
+  return null;
+}
+function thinkOf(bubble) {
+  var i, k;
+  for (i = 0; i < bubble.childNodes.length; i++) {
+    k = bubble.childNodes[i];
+    if (k.className && k.className.indexOf("think") !== -1 && k.className.indexOf("think-body") === -1) { return k; }
+  }
+  return null;
+}
+
 /* 子树里是否真的存在某个标签（注意：不能拿结构串去 indexOf("img")，
    因为纯文字里也可能出现 img 这几个字母） */
 function hasTag(node, tag) {
@@ -281,8 +302,14 @@ console.log("\n[4] 收到回答");
 lastXhr.respond(200, JSON.stringify({ choices: [{ message: { role: "assistant", content: "你好！我是 DeepSeek。", reasoning_content: "先打招呼" } }] }));
 check("回答已渲染", byId.messages.childNodes.length === 2);
 var lastMsg = byId.messages.childNodes[1];
-check("回答文本正确", textOf(lastMsg.childNodes[1]) === "你好！我是 DeepSeek。", textOf(lastMsg.childNodes[1]));
-check("思考过程单独显示", lastMsg.childNodes.length === 3);
+check("回答文本正确", textOf(bodyOf(lastMsg)) === "你好！我是 DeepSeek。", textOf(bodyOf(lastMsg)));
+check("思考过程单独成块", !!thinkOf(lastMsg) && textOf(thinkOf(lastMsg)).indexOf("先打招呼") > -1,
+  thinkOf(lastMsg) ? repr(thinkOf(lastMsg)) : "没有思考块");
+check("思考过程排在回答前面", lastMsg.childNodes.indexOf(thinkOf(lastMsg)) < lastMsg.childNodes.indexOf(bodyOf(lastMsg)));
+check("思考过程默认收起", thinkOf(lastMsg).lastChild.style.display === "none",
+  String(thinkOf(lastMsg).lastChild.style.display));
+check("标题栏写明是思考过程并带耗时", /思考过程/.test(textOf(thinkOf(lastMsg).firstChild)) &&
+  /秒/.test(textOf(thinkOf(lastMsg).firstChild)), textOf(thinkOf(lastMsg).firstChild));
 check("按钮恢复为发送", byId.send.childNodes[0].textContent === "发送");
 check("消息已落盘", /DeepSeek/.test(lsData["minichat.conversations.v1"]));
 
@@ -754,15 +781,26 @@ req16.chunk("tent\":\"世界\"}}]}\n\n");
 window.setTimeout(function () {
 
   var w = byId.messages.childNodes[byId.messages.childNodes.length - 1];
-  check("流式过程中正文已经在气泡里长出来", textOf(w.childNodes[1]).indexOf("你好") > -1, textOf(w.childNodes[1]));
+  check("流式过程中正文已经在气泡里长出来", textOf(bodyOf(w)).indexOf("你好") > -1, textOf(bodyOf(w)));
   check("思考过程也边生成边显示",
-    w.childNodes.length === 3 && textOf(w.childNodes[2]).indexOf("先想想") > -1,
-    w.childNodes.length + " 个子节点");
+    !!thinkOf(w) && textOf(thinkOf(w)).indexOf("先想想") > -1,
+    thinkOf(w) ? kidsRepr(thinkOf(w)) : "没有思考块");
+  check("正文一出来思考过程自动收起（标题栏还能点开）",
+    thinkOf(w).lastChild.style.display === "none" && /思考过程/.test(textOf(thinkOf(w).firstChild)),
+    String(thinkOf(w).lastChild.style.display) + " / " + textOf(thinkOf(w).firstChild));
+  thinkOf(w).firstChild.onclick();
+  check("点标题栏能展开思考过程", thinkOf(w).lastChild.style.display === "",
+    String(thinkOf(w).lastChild.style.display));
+  check("展开后箭头朝下", textOf(thinkOf(w).firstChild.firstChild) === "▾",
+    textOf(thinkOf(w).firstChild.firstChild));
+  thinkOf(w).firstChild.onclick();
+  check("再点一次收起", thinkOf(w).lastChild.style.display === "none" &&
+    textOf(thinkOf(w).firstChild.firstChild) === "▸", textOf(thinkOf(w).firstChild.firstChild));
 
   req16.chunk("data: [DONE]\n");
   req16.finish(200);
   var wf = byId.messages.childNodes[byId.messages.childNodes.length - 1];
-  check("结束后内容完整（含被切断那一行）", textOf(wf.childNodes[1]).indexOf("你好世界") > -1, textOf(wf.childNodes[1]));
+  check("结束后内容完整（含被切断那一行）", textOf(bodyOf(wf)).indexOf("你好世界") > -1, textOf(bodyOf(wf)));
   check("结束后不再是 pending 样子", wf.className.indexOf("pending") === -1, wf.className);
   check("按钮恢复为发送", byId.send.childNodes[0].textContent === "发送");
   check("流式结果已落盘", /你好世界/.test(lsData["minichat.conversations.v1"] || ""));
@@ -1266,6 +1304,74 @@ window.setTimeout(function () {
   byId.ioPick.onclick();
   check("不支持 FileReader 时给替代办法", /不支持读文件/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
   window.FileReader = savedFR;
+
+  console.log("\n[22] 默认模型与思考强度");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  loadApp();
+  check("默认模型是 deepseek-flash", byId.model.value === "deepseek-flash", byId.model.value);
+  check("默认思考强度是 high（与接口默认一致）", byId.effortSel.value === "high", byId.effortSel.value);
+  byId.apiKey.value = "sk-effort";
+  byId.saveSettings.onclick();
+
+  byId.input.value = "带思考的问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var bEffort = JSON.parse(lastXhr.body);
+  check("请求体 model 用的是新模型名", bEffort.model === "deepseek-flash", bEffort.model);
+  check("请求带上 thinking.enabled", bEffort.thinking && bEffort.thinking.type === "enabled",
+    JSON.stringify(bEffort.thinking));
+  check("请求带上 reasoning_effort", bEffort.reasoning_effort === "high", String(bEffort.reasoning_effort));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "回答", reasoning_content: "想了想" } }] }));
+  var effBubble = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("思考过程渲染成可折叠的一块", !!thinkOf(effBubble) && thinkOf(effBubble).lastChild.style.display === "none");
+
+  /* 关掉思考 */
+  byId.effortSel.value = "none";
+  byId.effortSel.onchange();
+  check("关掉思考会落盘", JSON.parse(lsData["minichat.settings.v1"]).reasoningEffort === "none",
+    lsData["minichat.settings.v1"]);
+  check("关掉思考有状态提示", /关闭思考/.test(textOf(byId.status)), textOf(byId.status));
+  byId.input.value = "不用想的问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var bOff = JSON.parse(lastXhr.body);
+  check("关掉后 thinking.disabled", bOff.thinking && bOff.thinking.type === "disabled", JSON.stringify(bOff.thinking));
+  check("关掉后 reasoning_effort 是 none", bOff.reasoning_effort === "none", String(bOff.reasoning_effort));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "直接回答" } }] }));
+  var offBubble = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("没有思考内容就不出现思考块", !thinkOf(offBubble), repr(offBubble));
+
+  /* 最高强度 */
+  byId.effortSel.value = "max";
+  byId.effortSel.onchange();
+  byId.input.value = "难一点的问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var bMax = JSON.parse(lastXhr.body);
+  check("最高档原样传给接口", bMax.reasoning_effort === "max" && bMax.thinking.type === "enabled",
+    bMax.reasoning_effort + "/" + bMax.thinking.type);
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "答案", reasoning_content: "想久一点" } }] }));
+  var maxBubble = byId.messages.childNodes[byId.messages.childNodes.length - 1];
+  check("思考块标题带耗时", /思考过程 · \d+ 秒/.test(textOf(thinkOf(maxBubble).firstChild)),
+    textOf(thinkOf(maxBubble).firstChild));
+
+  /* 非法值不认 */
+  byId.effortSel.value = "ultra";
+  byId.effortSel.onchange();
+  check("非法强度被忽略", JSON.parse(lsData["minichat.settings.v1"]).reasoningEffort === "max",
+    lsData["minichat.settings.v1"]);
+
+  /* 重新打开页面：模型与强度都要恢复 */
+  loadApp();
+  check("重开后模型恢复", byId.model.value === "deepseek-flash", byId.model.value);
+  check("重开后强度恢复", byId.effortSel.value === "max", byId.effortSel.value);
+  check("重开后历史里的思考过程仍在（收起状态）", (function () {
+    var all = byId.messages.childNodes, i, t;
+    for (i = 0; i < all.length; i++) {
+      t = thinkOf(all[i]);
+      if (t && textOf(t).indexOf("想久一点") > -1) { return t.lastChild.style.display === "none"; }
+    }
+    return false;
+  })());
 
   report();
 }, 300);

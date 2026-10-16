@@ -335,16 +335,32 @@ textarea { resize: none; }
 .msg.error .msg-body { background: #fdf1f0; border-color: #e0b4b1; color: #8e2a25; }
 .msg.pending .msg-body { color: #777; }
 
-.reasoning {
+/* 思考过程：标题栏可点，展开后是一块灰底小字 */
+.think { margin-bottom: 6px; }
+.think-head {
+  padding: 7px 8px;
+  min-height: 20px;
+  font-size: 12px;
+  color: #666;
+  background: #f0f1f3;
+  border: 1px solid #e0e3e7;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.think-caret { font-size: 11px; }
+.think-body {
   white-space: pre-wrap;
   word-wrap: break-word;
-  margin-top: 6px;
-  padding: 6px 8px;
+  overflow-wrap: break-word;
+  margin-top: 4px;
+  padding: 8px 10px;
   border-left: 3px solid #ccc;
-  background: #f4f4f4;
+  background: #f7f7f7;
   color: #666;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.5;
 }
+.msg.pending .think-body { color: #888; }
 
 /* ---------------- Markdown 排版（只作用于 AI 回答）---------------- */
 
@@ -649,6 +665,8 @@ html.dark .io-panel { background: #1e2126; border-color: #454b54; }
 html.dark .io-hint { color: #8f97a3; }
 html.dark .io-hint.err { color: #f0b3ad; }
 
+html.dark .think-head { background: #262a31; border-color: #383d45; color: #9aa3ad; }
+html.dark .think-body { background: #202429; border-left-color: #4a505a; color: #a9b0ba; }
 html.dark .msg-body { background: #23272e; border-color: #383d45; }
 html.dark .msg.assistant .msg-body { background: #23272e; }
 html.dark .msg.user .msg-body { background: #24334a; border-color: #3b5a86; }
@@ -656,7 +674,6 @@ html.dark .msg.error .msg-body { background: #3a2320; border-color: #6b3a34; col
 html.dark .msg.pending .msg-body { color: #9aa3ad; }
 html.dark .msg-head { color: #8f97a3; }
 html.dark .empty { color: #8f97a3; }
-html.dark .reasoning { background: #1d2026; border-left-color: #4a5058; color: #9aa3ad; }
 
 /* Markdown 元素在深色下的配色 */
 html.dark .msg-body.md pre { background: #1d2026; border-color: #3a3f47; }
