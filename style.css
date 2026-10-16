@@ -453,6 +453,41 @@ textarea { resize: none; }
 }
 
 /* ==========================================================================
+ * 导出 / 导入面板
+ *
+ * 定位只用 position:fixed + margin（老浏览器都吃），不做遮罩：面板自带
+ * 「关闭」。宽度用 max-width + 左右 auto 居中，手机上基本占满一行。
+ * ======================================================================== */
+
+.io-panel {
+  display: none;
+  position: fixed;
+  left: 6px;
+  right: 6px;
+  top: 8px;
+  z-index: 40;              /* 盖住抽屉(30)和固定输入框(12) */
+  max-width: 560px;
+  max-height: 88%;
+  overflow-y: auto;
+  margin: 0 auto;
+  padding: 10px 12px 12px 12px;
+  border: 1px solid #9aa3b0;
+  border-radius: 6px;
+  background: #f7f8fa;
+}
+.io-panel.on { display: block; }
+.io-head { margin-bottom: 6px; }
+.io-head:after { content: ""; display: table; clear: both; }
+#ioTitle { float: left; font-weight: bold; font-size: 15px; line-height: 32px; }
+.io-close { float: right; min-width: 64px; }
+.io-hint { margin: 0 0 8px 0; min-height: 17px; }
+.io-hint.err { color: #8e2a25; }
+#ioText { width: 100%; height: 160px; }
+.io-actions { margin-top: 8px; }
+.io-actions:after { content: ""; display: table; clear: both; }
+.io-actions .btn { float: left; margin: 0 8px 8px 0; min-height: 40px; padding: 8px 12px; font-size: 15px; }
+
+/* ==========================================================================
  * 桌面 / 平板（≥701px）：左栏常驻 + 消息区内部滚动
  * ======================================================================== */
 
@@ -465,6 +500,8 @@ textarea { resize: none; }
   #overlay { display: none !important; }
   #toBottom { display: none !important; }
   #hint { display: inline; }
+  .io-actions .btn { min-height: 0; padding: 4px 10px; font-size: 13px; }
+  #ioText { height: 200px; }
 
   #sidebar {
     position: static;
@@ -608,6 +645,9 @@ html.dark .edit-text { color: #a8c2e0; }
 html.dark .edit-cancel,
 html.dark .edit-btn,
 html.dark .retry-btn { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+html.dark .io-panel { background: #1e2126; border-color: #454b54; }
+html.dark .io-hint { color: #8f97a3; }
+html.dark .io-hint.err { color: #f0b3ad; }
 
 html.dark .msg-body { background: #23272e; border-color: #383d45; }
 html.dark .msg.assistant .msg-body { background: #23272e; }

@@ -1378,6 +1378,194 @@
     return out.concat(history);
   }
 
+  /* --------------------- 导出 / 导入单个对话 ---------------------------- */
+  /* 导出就是一份自描述的 JSON（带 kind/version 便于以后兼容），导入能吃三种
+     形态：带信封的导出、裸会话对象、纯消息数组。全部走 normalizeMessages
+     过滤一遍，坏数据进不来。
+     老浏览器上「下载」可能不灵，所以复制/粘贴这条路径永远可用。 */
+
+  var IO_KIND = "minichat.conversation";
+  var IO_VERSION = 1;
+  var IO_MAX_CHARS = 4000000;      /* 导入文本上限，防手滑粘个巨大的东西 */
+
+  function buildExportText(conv) {
+    var payload = {
+      app: "minichat",
+      kind: IO_KIND,
+      version: IO_VERSION,
+      exportedAt: nowMs(),
+      conversation: {
+        title: conv.title || "新对话",
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt,
+        messages: sanitizeForSave(conv.messages)
+      }
+    };
+    return JSON.stringify(payload, null, 2);
+  }
+
+  function exportFileName(title) {
+    var t = trim(title || "").replace(/[\\\/:*?"<>|\s]+/g, "-");
+    if (t.length > 24) { t = t.substring(0, 24); }
+    var d = new Date();
+    var p = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return "minichat-" + (t || "chat") + "-" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + ".json";
+  }
+
+  function setIoTitle(text) {
+    var node = $("ioTitle");
+    node.innerHTML = "";
+    node.appendChild(document.createTextNode(text));
+  }
+
+  function setIoHint(text, isErr) {
+    var node = $("ioHint");
+    node.className = isErr ? "note io-hint err" : "note io-hint";
+    node.innerHTML = "";
+    node.appendChild(document.createTextNode(text || ""));
+  }
+
+  function closeIo() { $("ioPanel").className = "io-panel"; }
+
+  function openIo(mode) {
+    var ta = $("ioText");
+    var conv = getCurrent();
+    ta.value = "";
+    if (mode === "export") {
+      if (!conv.messages.length) {
+        setIoTitle("导出当前对话");
+        setIoHint("这个对话还没有消息，没什么可导出的。", true);
+        ta.value = buildExportText(conv);
+      } else {
+        setIoTitle("导出「" + (conv.title || "新对话") + "」");
+        setIoHint("这是这段对话的完整内容（" + conv.messages.length + " 条）。点「复制」或「下载 .json」存好，" +
+          "换设备时用「导入对话」还原。");
+        ta.value = buildExportText(conv);
+      }
+    } else {
+      setIoTitle("导入对话");
+      setIoHint("把之前导出的 JSON 粘到下面，或点「选择文件…」，然后点「导入为对话」。会新建一段对话，不动现有的。");
+    }
+    closeDrawer();                       /* 手机抽屉先收起，免得和面板打架 */
+    $("ioPanel").className = "io-panel on";
+    if (mode === "import") {
+      try { ta.focus(); } catch (e) { /* 忽略 */ }
+    }
+  }
+
+  /* 老浏览器没有 Blob 就退回 data URL；两样都不行就让用户走「复制」 */
+  function downloadText(text, name) {
+    var url = "";
+    try {
+      if (window.Blob && window.URL && window.URL.createObjectURL) {
+        url = window.URL.createObjectURL(new window.Blob([text], { type: "application/json" }));
+      } else {
+        url = "data:application/json;charset=utf-8," + encodeURIComponent(text);
+      }
+    } catch (e) { url = ""; }
+    if (!url) { setIoHint("这个浏览器不支持直接下载，请点「复制」再自己存成 .json。", true); return; }
+
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.style.display = "none";
+    if (document.body && document.body.appendChild) { document.body.appendChild(a); }
+    if (a.click) { a.click(); }
+    else if (window.open) { window.open(url); }
+    else {
+      setIoHint("这个浏览器不支持直接下载，请点「复制」再自己存成 .json。", true);
+      return;
+    }
+    if (document.body && document.body.removeChild) {
+      try { document.body.removeChild(a); } catch (e2) { /* 忽略 */ }
+    }
+    if (window.URL && window.URL.revokeObjectURL) {
+      window.setTimeout(function () {
+        try { window.URL.revokeObjectURL(url); } catch (e3) { /* 忽略 */ }
+      }, 4000);
+    }
+    setIoHint("已生成文件，浏览器应该开始下载（若没反应就点「复制」）。");
+  }
+
+  function copyIoText() {
+    var ta = $("ioText");
+    if (!ta.value) { setIoHint("这里还没有内容。", true); return; }
+    var ok = false;
+    try {
+      ta.focus();
+      if (ta.select) { ta.select(); }
+      if (document.execCommand) { ok = document.execCommand("copy"); }
+    } catch (e) { ok = false; }
+    if (ok) { setIoHint("已复制到剪贴板。"); }
+    else { setIoHint("这个浏览器不让自动复制：内容已经全选，按 Ctrl/Cmd+C（手机长按选择复制）即可。", true); }
+  }
+
+  /* 从任意一种形态里取出 {title, messages}，认不出来返回 null */
+  function pickImported(data) {
+    if (!data || typeof data !== "object") { return null; }
+    if (data.conversation && data.conversation.messages) {
+      return { title: data.conversation.title, createdAt: data.conversation.createdAt,
+        messages: data.conversation.messages };
+    }
+    if (data.messages) { return { title: data.title, createdAt: data.createdAt, messages: data.messages }; }
+    if (typeof data.length === "number" && data.length && data[0] && data[0].role) {
+      return { title: "", messages: data };      /* 光是一个消息数组也收 */
+    }
+    return null;
+  }
+
+  function importFromText() {
+    var text = trim($("ioText").value);
+    if (!text) { setIoHint("先把 JSON 粘进来，或点「选择文件…」。", true); return; }
+    if (text.length > IO_MAX_CHARS) {
+      setIoHint("内容太大了（超过 " + Math.round(IO_MAX_CHARS / 1000000) + "MB），先确认文件对不对。", true);
+      return;
+    }
+    var data = jsonParse(text);
+    if (!data) { setIoHint("不是合法的 JSON —— 检查是不是复制全了。", true); return; }
+    var picked = pickImported(data);
+    if (!picked) {
+      setIoHint("认不出这个 JSON：需要是 MiniChat 导出的对话，或者一个消息数组。", true);
+      return;
+    }
+    var msgs = normalizeMessages(picked.messages);
+    if (!msgs.length) {
+      setIoHint("这里面没有可用的消息（role 只能是 user / assistant / error）。", true);
+      return;
+    }
+    var dropped = 0;
+    if (msgs.length > MAX_STORED_MESSAGES) {
+      dropped = msgs.length - MAX_STORED_MESSAGES;
+      msgs = msgs.slice(dropped);          /* 和本地存储一样，只留最近的 */
+    }
+
+    var conv = createConversation();
+    conv.messages = msgs;
+    conv.trimStart = 0;
+    if (picked.createdAt) { conv.createdAt = picked.createdAt; }
+    conv.updatedAt = nowMs();
+    var title = trim(picked.title || "");
+    if (!title) {
+      var i, m;
+      for (i = 0; i < msgs.length; i++) {
+        m = msgs[i];
+        if (m.role === "user" && m.content) {
+          var t = m.content.replace(/\s+/g, " ");
+          title = t.length > 18 ? t.substring(0, 18) + "…" : t;
+          break;
+        }
+      }
+    }
+    conv.title = title || "导入的对话";
+
+    persistConversations();
+    renderConvList();
+    autoScroll = true;
+    renderMessages();
+    closeIo();
+    setStatus("已导入对话：共 " + msgs.length + " 条消息" + (dropped ? "（超出 " + MAX_STORED_MESSAGES + " 条，已丢最早的 " + dropped + " 条）" : ""));
+  }
+
   function setBusy(value) {
     busy = !!value;
     var btn = $("send");
@@ -1902,6 +2090,45 @@
 
     $("newChat").onclick = newConversation;
     $("clearChat").onclick = clearCurrentConversation;
+
+    /* 导出 / 导入单个对话 */
+    $("exportChat").onclick = function () { openIo("export"); };
+    $("importChat").onclick = function () { openIo("import"); };
+    $("ioClose").onclick = closeIo;
+    $("ioCopy").onclick = copyIoText;
+    $("ioDownload").onclick = function () {
+      var text = $("ioText").value;
+      if (!text) { setIoHint("这里还没有内容。", true); return; }
+      downloadText(text, exportFileName(getCurrent().title));
+    };
+    $("ioImport").onclick = importFromText;
+    $("ioPick").onclick = function () {
+      var f = $("ioFile");
+      if (!window.FileReader) {
+        setIoHint("这个浏览器不支持读文件，请把 JSON 直接粘到上面的框里。", true);
+        return;
+      }
+      if (f.click) { f.click(); }
+      else { setIoHint("这个浏览器不支持选文件，请把 JSON 直接粘到上面的框里。", true); }
+    };
+    $("ioFile").onchange = function () {
+      var f = $("ioFile");
+      var file = f && f.files && f.files[0];
+      f.value = "";                      /* 便于再次选同一个文件 */
+      if (!file) { return; }
+      if (file.size && file.size > IO_MAX_CHARS) {
+        setIoHint("文件太大了（超过 " + Math.round(IO_MAX_CHARS / 1000000) + "MB）。", true);
+        return;
+      }
+      var reader = new window.FileReader();
+      reader.onload = function () {
+        $("ioText").value = String(reader.result || "");
+        setIoHint("文件已读入，点「导入为对话」完成导入。");
+      };
+      reader.onerror = function () { setIoHint("读文件失败，试试把内容直接粘进来。", true); };
+      if (reader.readAsText) { reader.readAsText(file); }
+      else { setIoHint("这个浏览器不支持读文件，请把内容直接粘进来。", true); }
+    };
 
     /* 取消编辑：把输入框清空、按钮变回「发送」 */
     $("editCancel").onclick = function () { cancelEdit(false); };

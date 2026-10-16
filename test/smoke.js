@@ -88,7 +88,8 @@ var byId = {};
  "messages", "input", "hint", "send", "menuBtn", "overlay", "toBottom",
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
- "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel"].forEach(function (id) { byId[id] = makeEl("div"); });
+ "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel",
+ "exportChat", "importChat", "ioPanel", "ioTitle", "ioHint", "ioText", "ioCopy", "ioDownload", "ioPick", "ioImport", "ioFile", "ioClose"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
 metaTheme.setAttribute("name", "theme-color");
@@ -1116,6 +1117,155 @@ window.setTimeout(function () {
 
   /* 正常回答结尾不该有「重试」 */
   check("正常回答结尾没有「重试」", collectClass(byId.messages, "retry-btn").length === 0);
+
+  console.log("\n[21] 导出 / 导入单个对话");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  loadApp();
+  byId.apiKey.value = "sk-io";
+  byId.saveSettings.onclick();
+
+  /* 先造一段有两个来回的对话 */
+  byId.input.value = "第一个问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第一个回答", reasoning_content: "想了下" } }] }));
+  byId.input.value = "第二个问题";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "第二个回答" } }] }));
+  check("准备了两轮对话", byId.messages.childNodes.length === 4, byId.messages.childNodes.length + "");
+
+  byId.exportChat.onclick();
+  check("点「导出当前对话」打开面板", byId.ioPanel.className === "io-panel on", byId.ioPanel.className);
+  check("标题里带上对话名", /第一个问题/.test(textOf(byId.ioTitle)), textOf(byId.ioTitle));
+  var exportedText = byId.ioText.value;
+  var exported = null;
+  try { exported = JSON.parse(exportedText); } catch (e) { exported = null; }
+  check("导出的是合法 JSON", !!exported);
+  check("带自描述信封", exported && exported.app === "minichat" && exported.kind === "minichat.conversation" &&
+    exported.version === 1, exportedText.substring(0, 60));
+  check("导出四条消息", exported && exported.conversation.messages.length === 4,
+    exported ? String(exported.conversation.messages.length) : "");
+  check("导出内容与原文一致", exported &&
+    exported.conversation.messages[0].content === "第一个问题" &&
+    exported.conversation.messages[1].content === "第一个回答" &&
+    exported.conversation.messages[1].reasoning === "想了下" &&
+    exported.conversation.messages[3].content === "第二个回答",
+    exportedText.substring(0, 200));
+  check("导出不含 pending 之类的内部字段",
+    exported && exported.conversation.messages[0].pending === undefined &&
+    exported.conversation.messages[0].tk === undefined);
+  check("导出提示里说明了条数", /4 条/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  /* 没有 execCommand 的环境要退回「手动复制」提示 */
+  byId.ioCopy.onclick();
+  check("不能自动复制时给出替代办法", /Ctrl\/Cmd\+C/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  /* 没有 Blob/URL 的浏览器：不报错，退回提示 */
+  byId.ioDownload.onclick();
+  check("不支持下载时给出替代办法", /不支持直接下载/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  byId.ioClose.onclick();
+  check("点「关闭」收起面板", byId.ioPanel.className === "io-panel", byId.ioPanel.className);
+
+  /* 导入：把刚导出的东西原样吃回去，应该新建一段对话 */
+  byId.importChat.onclick();
+  check("点「导入对话」打开面板且是空的", byId.ioPanel.className === "io-panel on" && byId.ioText.value === "",
+    byId.ioText.value);
+  byId.ioImport.onclick();
+  check("空内容导入会提示", /先把 JSON 粘进来/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  byId.ioText.value = "这不是 json";
+  byId.ioImport.onclick();
+  check("非法 JSON 会提示", /不是合法的 JSON/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  byId.ioText.value = JSON.stringify({ hello: "world" });
+  byId.ioImport.onclick();
+  check("认不出的 JSON 会提示", /认不出这个 JSON/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  byId.ioText.value = JSON.stringify({ messages: [{ role: "system", content: "我是系统" }] });
+  byId.ioImport.onclick();
+  check("没有可用消息时提示", /没有可用的消息/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+
+  var convsBefore = JSON.parse(lsData["minichat.conversations.v1"]).length;
+  byId.ioText.value = exportedText;          /* 导出 → 原样导入 */
+  byId.ioImport.onclick();
+  check("导入后新建了一段对话", byId.convList.childNodes.length === convsBefore + 1,
+    byId.convList.childNodes.length + "（导入前 " + convsBefore + "）");
+  check("导入后自动切到新对话", byId.convTitle.childNodes[0].textContent === "第一个问题",
+    byId.convTitle.childNodes[0].textContent);
+  check("导入的对话渲染出四条消息", byId.messages.childNodes.length === 4, byId.messages.childNodes.length + "");
+  check("导入的思考过程也在", /想了下/.test(textOf(byId.messages)), textOf(byId.messages).substring(0, 80));
+  check("导入后关掉面板并提示条数", byId.ioPanel.className === "io-panel" && /共 4 条/.test(textOf(byId.status)),
+    textOf(byId.status));
+  check("导入的对话已落盘", JSON.parse(lsData["minichat.conversations.v1"]).length === convsBefore + 1);
+  check("原来的对话没被动", (function () {
+    var all = JSON.parse(lsData["minichat.conversations.v1"]), ci, n = 0;
+    for (ci = 0; ci < all.length; ci++) { if (all[ci].messages.length === 4) { n++; } }
+    return n === 2;
+  })());
+
+  /* 再往后发一条：导入的上下文要能用，且 skip 的消息不进上下文 */
+  byId.ioText.value = JSON.stringify([
+    { role: "user", content: "老问题" },
+    { role: "assistant", content: "半截回答", skip: true },
+    { role: "user", content: "新问题" }
+  ]);
+  byId.importChat.onclick();
+  byId.ioText.value = JSON.stringify([
+    { role: "user", content: "老问题" },
+    { role: "assistant", content: "半截回答", skip: true },
+    { role: "user", content: "新问题" }
+  ]);
+  byId.ioImport.onclick();
+  check("光给一个消息数组也能导入", byId.messages.childNodes.length === 3, byId.messages.childNodes.length + "");
+  check("标题从第一条提问推导", byId.convTitle.childNodes[0].textContent === "老问题",
+    byId.convTitle.childNodes[0].textContent);
+  byId.input.value = "继续问";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var ioPayload = (function () {
+    var all = JSON.parse(lastXhr.body).messages, out = [], ki;
+    for (ki = 0; ki < all.length; ki++) { if (all[ki].role !== "system") { out.push(all[ki].content); } }
+    return out;
+  })();
+  check("skip 的导入消息不进上下文", ioPayload.join("|") === "老问题|新问题|继续问", JSON.stringify(ioPayload));
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
+
+  /* 未知 role 会被过滤掉 */
+  byId.importChat.onclick();
+  byId.ioText.value = JSON.stringify([
+    { role: "system", content: "混进来一条" },
+    { role: "user", content: "只留这条" },
+    { role: "tool", content: "还有这条" }
+  ]);
+  byId.ioImport.onclick();
+  check("未知 role 被过滤掉", byId.messages.childNodes.length === 1 &&
+    textOf(byId.messages).indexOf("只留这条") > -1, textOf(byId.messages));
+
+  /* 选文件：能读进来（FileReader 可用时） */
+  var readFile = null;
+  window.FileReader = function () {
+    var self = this;
+    this.readAsText = function (file) { readFile = file; self.result = byId.ioText.value; self.onload(); };
+  };
+  byId.importChat.onclick();
+  byId.ioText.value = exportedText;
+  var picked = { name: "c.json", size: 200 };
+  byId.ioFile.files = [picked];
+  byId.ioFile.value = "c.json";
+  var readerText = exportedText;
+  byId.ioFile.onchange();
+  check("选文件后把内容读进文本框", readFile === picked && byId.ioText.value === readerText,
+    readFile ? readFile.name : "未读");
+  check("读入后有提示", /点「导入为对话」/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+  check("选完文件清空 input 便于再选", byId.ioFile.value === "", byId.ioFile.value);
+
+  /* 老浏览器没有 FileReader：给替代办法而不是静默失败 */
+  var savedFR = window.FileReader;
+  window.FileReader = null;
+  byId.ioPick.onclick();
+  check("不支持 FileReader 时给替代办法", /不支持读文件/.test(textOf(byId.ioHint)), textOf(byId.ioHint));
+  window.FileReader = savedFR;
 
   report();
 }, 300);

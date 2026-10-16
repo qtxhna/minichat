@@ -48,6 +48,10 @@
         <button type="button" id="newChat" class="btn conv-act-left">＋ 新对话</button>
         <button type="button" id="clearChat" class="btn conv-act-right">清空当前对话</button>
       </div>
+      <div class="conv-actions">
+        <button type="button" id="exportChat" class="btn conv-act-left">导出当前对话</button>
+        <button type="button" id="importChat" class="btn conv-act-right">导入对话</button>
+      </div>
       <div id="convList"></div>
       <div id="storeNote" class="note"></div>
     </div>
@@ -123,6 +127,24 @@
 
   <div id="overlay"></div>
   <button type="button" id="toBottom" title="回到底部">↓</button>
+
+  <!-- ===== 导出 / 导入单个对话（平时隐藏） ===== -->
+  <div id="ioPanel" class="io-panel">
+    <div class="io-head">
+      <span id="ioTitle">导出 / 导入对话</span>
+      <button type="button" id="ioClose" class="btn io-close">关闭</button>
+    </div>
+    <div id="ioHint" class="note io-hint"></div>
+    <textarea id="ioText" rows="7" spellcheck="false"
+      placeholder="导出的 JSON 会出现在这里；导入时把 JSON 粘进来"></textarea>
+    <div class="io-actions">
+      <button type="button" id="ioCopy" class="btn">复制</button>
+      <button type="button" id="ioDownload" class="btn">下载 .json</button>
+      <button type="button" id="ioPick" class="btn">选择文件…</button>
+      <button type="button" id="ioImport" class="btn btn-primary">导入为对话</button>
+    </div>
+    <input type="file" id="ioFile" accept=".json,application/json" style="display:none">
+  </div>
 
 </div>
 
