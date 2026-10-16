@@ -85,15 +85,6 @@
 
         <label class="chk"><input type="checkbox" id="mdEnabled"> 回答用 Markdown 排版</label>
         <label class="chk"><input type="checkbox" id="streamEnabled"> 流式输出（边生成边显示）</label>
-
-        <label for="ctxBudget">每次最多带多少上下文</label>
-        <select id="ctxBudget">
-          <option value="1m">1M（deepseek-flash / v4-pro，默认）</option>
-          <option value="256k">256K</option>
-          <option value="128k">128K</option>
-          <option value="64k">64K（更老的模型 / 中转站）</option>
-        </select>
-        <div class="note">超出就只会丢掉最早的消息（本地记录不删）。接口如果报「超出上下文长度」，把这里调小一档。</div>
       </div>
     </div>
   </div>
