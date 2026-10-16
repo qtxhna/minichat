@@ -125,14 +125,18 @@
         <span class="edit-text">正在编辑提问：发送后会从这里重新回答</span>
         <button type="button" id="editCancel" class="btn edit-cancel">取消</button>
       </div>
+      <!-- 待发送的图片（缩略图，点 ✕ 移除），平时隐藏 -->
+      <div id="attachBar" class="attach-bar"></div>
       <textarea id="input" rows="3" spellcheck="false" enterkeyhint="send"
         placeholder="在这里输入消息…（手机上按键盘的发送键，电脑上按 Enter 发送）"></textarea>
       <div class="composer-actions">
         <!-- 手机键盘没有 Shift，用这个按钮插入换行；桌面端隐藏（用 Shift+Enter 即可） -->
         <button type="button" id="newlineBtn" class="btn btn-newline">↵ 换行</button>
+        <button type="button" id="imgBtn" class="btn btn-img" title="发送图片（只有 deepseek-flash 支持）">图片</button>
         <button type="button" id="send" class="btn btn-primary">发送</button>
         <span id="hint" class="note">回答支持基础 Markdown 排版（可在「设置」里关掉）。</span>
       </div>
+      <input type="file" id="imgFile" accept="image/*" multiple style="display:none">
     </div>
   </div>
 

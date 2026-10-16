@@ -28,6 +28,16 @@
   var CONTEXT_TOKENS_HIGH = 640000;
   var CONTEXT_TOKENS_LOW = 320000;
   var TOKENS_PER_MESSAGE = 4;      // 每条消息 role 等固定开销
+
+  /* 图片（图像理解）：deepseek-flash 支持把图片作为 user 消息的一个内容块传进去，
+     图片用 data: URL 内联。手机上随手拍一张就是 4MB 上下，直接塞进请求和
+     localStorage 都不现实，所以选完先缩到 IMAGE_MAX_SIDE 以内再转 JPEG。 */
+  var MAX_IMAGES = 4;              // 每条消息最多几张
+  var IMAGE_MAX_SIDE = 1600;       // 缩放后最长边（接口内部也会缩到约 1300）
+  var IMAGE_QUALITY = 0.85;
+  var IMAGE_KEEP_CHARS = 120000;   // 比这还小的图就别重编码了
+  var IMAGE_MAX_BYTES = 12 * 1024 * 1024;   // 原图大小上限，纯粹防手滑
+  var IMAGE_TOKENS = 1100;         // 每张图按接口上限 1024 token 估，留点余量
   var MAX_CONVERSATIONS = 50;      // 本地最多保留的对话数
   var REQUEST_TIMEOUT = 300000;    // 非流式请求的整体超时（上下文大时要久一点）
   var STREAM_IDLE_TIMEOUT = 120000;// 流式输出：多久没有新内容就算卡住
@@ -111,6 +121,7 @@
   var currentId = null;
   var busy = false;
   var editingIndex = -1;             /* 正在编辑的用户消息下标；-1 = 没在编辑 */
+  var pendingImages = [];            /* 输入框里还没发出去的图片（data: URL） */
   var activeXhr = null;
   var activeRequestCleanup = null;   /* 当前请求的统一收尾函数（含清空闲定时器） */
   var requestAborted = false;
@@ -460,6 +471,7 @@
         role: m.role,
         content: typeof m.content === "string" ? m.content : "",
         reasoning: typeof m.reasoning === "string" ? m.reasoning : "",
+        images: normalizeImages(m.images),
         /* skip = 该条只用于展示，不参与后续上下文（例如“已停止”） */
         skip: !!m.skip,
         ts: typeof m.ts === "number" ? m.ts : nowMs()
@@ -534,13 +546,15 @@
     for (i = 0; i < messages.length; i++) {
       m = messages[i];
       if (m.pending && !m.content) { continue; }
-      out.push({
+      var item = {
         role: m.role,
         content: m.content || "",
         reasoning: m.reasoning || "",
         skip: !!m.skip,
         ts: m.ts
-      });
+      };
+      if (m.images && m.images.length) { item.images = m.images.slice(0); }
+      out.push(item);
     }
     return out;
   }
@@ -1137,7 +1151,9 @@
       }
       /* 正在流式输出的那条，记住节点，之后只重画它一个 */
       if (m === streamMsg) { streamBody = body; }
-      wrap.appendChild(body);
+      /* 只有图片没有文字时，不显示空的白框 */
+      if (bodyText !== "" || !(m.images && m.images.length)) { wrap.appendChild(body); }
+      if (m.images && m.images.length) { wrap.appendChild(buildMsgImages(m.images)); }
 
       box.appendChild(wrap);
     }
@@ -1196,6 +1212,7 @@
     if (busy) { setStatus("正在等待回答，请先停止或等待完成", true); return; }
     if (!findConversation(id)) { return; }
     cancelEdit(true);            /* 换对话了，编辑状态跟着作废 */
+    clearPendingImages();
     currentId = id;
     storeSet(KEY_CURRENT, currentId);
     closeDrawer();
@@ -1243,6 +1260,7 @@
       return;
     }
     cancelEdit(true);
+    clearPendingImages();
     createConversation();
     persistConversations();
     renderConvList();
@@ -1260,6 +1278,7 @@
     if (!conv.messages.length) { setStatus("当前对话本来就是空的"); return; }
     if (!window.confirm("确定清空当前对话的全部消息吗？")) { return; }
     cancelEdit(true);
+    clearPendingImages();
     conv.messages = [];
     conv.trimStart = 0;          /* 上下文窗口跟着重来 */
     conv.title = "新对话";
@@ -1272,7 +1291,264 @@
     setStatus("已清空当前对话");
   }
 
-  /* --------------------- 编辑最后一条提问并重发 -------------------------- */
+  /* ------------------------- 输入框里的图片 ------------------------------ */
+
+  /* 非 flash 模型传图片大概率被拒，提前提醒一句（不拦着） */
+  function imageModelWarning() {
+    var m = settings.model;
+    if (m === "deepseek-flash" || m === "deepseek-v4-flash-vision-exp") { return ""; }
+    return "注意：只有 deepseek-flash 支持图片，当前模型（" + m + "）可能报错";
+  }
+
+  function renderAttachBar() {
+    var bar = $("attachBar");
+    var i, item, im, x;
+    if (!bar) { return; }
+    clearNode(bar);
+    bar.className = pendingImages.length ? "attach-bar on" : "attach-bar";
+    for (i = 0; i < pendingImages.length; i++) {
+      item = el("span", "attach-item");
+      im = document.createElement("img");
+      im.setAttribute("src", pendingImages[i]);
+      im.setAttribute("alt", "待发送的图片");
+      item.appendChild(im);
+      x = el("span", "attach-x", "✕");
+      x.title = "移除这张图片";
+      x.setAttribute("data-img", String(i));
+      x.onclick = (function (idx) {
+        return function () { removePendingImage(idx); };
+      })(i);
+      item.appendChild(x);
+      bar.appendChild(item);
+    }
+    syncComposerSpace();
+  }
+
+  function removePendingImage(idx) {
+    if (idx < 0 || idx >= pendingImages.length) { return; }
+    pendingImages.splice(idx, 1);
+    renderAttachBar();
+  }
+
+  function clearPendingImages() {
+    if (!pendingImages.length) { return; }
+    pendingImages = [];
+    renderAttachBar();
+  }
+
+  /* 一次可以选多张，按顺序读（FileReader 是异步的） */
+  function addImageFiles(files) {
+    var list = [], i, tooMany = "";
+    if (!files || !files.length) { return; }
+    for (i = 0; i < files.length; i++) { list.push(files[i]); }
+    if (pendingImages.length >= MAX_IMAGES) {
+      setStatus("每条消息最多带 " + MAX_IMAGES + " 张图片", true);
+      return;
+    }
+    if (list.length > MAX_IMAGES - pendingImages.length) {
+      tooMany = "每条消息最多带 " + MAX_IMAGES + " 张图片，多的已经忽略了";
+      list = list.slice(0, MAX_IMAGES - pendingImages.length);
+    }
+    var idx = 0, warn = tooMany;
+    function next() {
+      var file;
+      if (idx >= list.length) {
+        renderAttachBar();
+        /* 攒下来的提示优先于「已添加 N 张」：不然刚提示完就被盖掉了。
+           一张都没成功时也要说清楚原因。 */
+        var note = warn || imageModelWarning();
+        if (!note && pendingImages.length) { note = "已添加 " + pendingImages.length + " 张图片"; }
+        if (note) { setStatus(note, !!warn); }
+        return;
+      }
+      file = list[idx];
+      idx++;
+      if (!file) { next(); return; }
+      if (file.size && file.size > IMAGE_MAX_BYTES) {
+        warn = "图片太大（" + humanSize(file.size) + "），换一张小点的";
+        next();
+        return;
+      }
+      var reader;
+      try { reader = new window.FileReader(); } catch (e) { setStatus("这个浏览器读不了文件", true); return; }
+      reader.onload = function () {
+        var data = String(reader.result || "");
+        if (data.indexOf("data:image/") !== 0) {
+          warn = "这个文件不是图片，已经跳过了";
+          next();
+          return;
+        }
+        shrinkImage(data, function (out) {
+          if (pendingImages.length < MAX_IMAGES) { pendingImages.push(out); }
+          next();
+        });
+      };
+      reader.onerror = function () { warn = "有张图片读失败了"; next(); };
+      if (!reader.readAsDataURL) { setStatus("这个浏览器不支持读图片，请换新版浏览器", true); return; }
+      try { reader.readAsDataURL(file); } catch (e2) { setStatus("读图片失败", true); next(); }
+    }
+    next();
+  }
+
+  /* 图片在气泡里：先文字后图片，和发给接口的块顺序一致 */
+  function buildMsgImages(images) {
+    var box = el("div", "msg-imgs"), i, im;
+    for (i = 0; i < images.length; i++) {
+      im = document.createElement("img");
+      im.className = "msg-img";
+      im.setAttribute("src", images[i]);
+      im.setAttribute("alt", "图片");
+      box.appendChild(im);
+    }
+    return box;
+  }
+
+  /* 只认 data:image/ 开头的字符串：本地存的东西不去请求外部地址 */
+  function normalizeImages(arr) {
+    var out = [], i, s;
+    if (!arr || !arr.length) { return null; }
+    for (i = 0; i < arr.length && out.length < MAX_IMAGES; i++) {
+      s = arr[i];
+      if (typeof s === "string" && s.indexOf("data:image/") === 0) { out.push(s); }
+    }
+    return out.length ? out : null;
+  }
+
+  /* ---------------------------- 图片处理 -------------------------------- */
+
+  function humanSize(n) {
+    if (n < 1024) { return n + " B"; }
+    if (n < 1024 * 1024) { return Math.round(n / 1024) + " KB"; }
+    return (Math.round(n / (1024 * 1024) * 10) / 10) + " MB";
+  }
+
+  /* 从 JPEG 的 EXIF 里读 orientation（1-8），读不到就当 1。
+     老 Safari 把图片画进 canvas 时不会自动按 EXIF 转正，只能自己摆。 */
+  function readExifOrientation(bin, start) {
+    var tiff = start, little, i, count, off, tag, val;
+    if (start + 8 > bin.length) { return 1; }
+    if (bin.charCodeAt(tiff) === 0x49 && bin.charCodeAt(tiff + 1) === 0x49) { little = true; }
+    else if (bin.charCodeAt(tiff) === 0x4D && bin.charCodeAt(tiff + 1) === 0x4D) { little = false; }
+    else { return 1; }
+    function u16(pos) {
+      var a = bin.charCodeAt(pos), b = bin.charCodeAt(pos + 1);
+      if (a !== a || b !== b) { return 0; }
+      return little ? (a + (b << 8)) : ((a << 8) + b);
+    }
+    function u32(pos) {
+      return little
+        ? (u16(pos) + (u16(pos + 2) << 16))
+        : ((u16(pos) << 16) + u16(pos + 2));
+    }
+    try {
+      count = u16(tiff + 8);
+      if (count > 512) { return 1; }
+      for (i = 0; i < count; i++) {
+        off = tiff + 10 + i * 12;
+        if (off + 12 > bin.length) { return 1; }
+        tag = u16(off);
+        if (tag === 0x0112) {
+          val = u16(off + 8);
+          return (val >= 1 && val <= 8) ? val : 1;
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    return 1;
+  }
+
+  /* 扫一遍 JPEG 的标记段，取 EXIF 方向和「文件里实际存的」宽高。
+     为什么要存宽：drawImage 在 Safari 13.4+/Firefox 77+ 已经会按 EXIF 转正，
+     老浏览器不会。用自然宽高和这里读到的一比，就知道该不该自己转。 */
+  function jpegInfo(dataUrl) {
+    var out = { o: 1, w: 0, h: 0 };
+    var comma, bin, i, marker, len, isSOF;
+    try {
+      if (dataUrl.indexOf("data:image/jpeg") !== 0 && dataUrl.indexOf("data:image/jpg") !== 0) { return out; }
+      if (!window.atob) { return out; }
+      comma = dataUrl.indexOf(",");
+      if (comma < 0) { return out; }
+      bin = window.atob(dataUrl.substring(comma + 1, comma + 1 + 174764));   /* 头部 128KB 足够 */
+      if (bin.length < 4 || bin.charCodeAt(0) !== 0xFF || bin.charCodeAt(1) !== 0xD8) { return out; }
+      i = 2;
+      while (i + 4 <= bin.length) {
+        if (bin.charCodeAt(i) !== 0xFF) { i++; continue; }
+        marker = bin.charCodeAt(i + 1);
+        if (marker === 0xFF) { i++; continue; }
+        if (marker === 0xD8 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { i += 2; continue; }
+        if (marker === 0xDA || marker === 0xD9) { break; }      /* 到压缩数据了 */
+        len = (bin.charCodeAt(i + 2) << 8) + bin.charCodeAt(i + 3);
+        if (len < 2) { break; }
+        if (marker === 0xE1 && bin.substr(i + 4, 6) === "Exif" + String.fromCharCode(0, 0)) {
+          out.o = readExifOrientation(bin, i + 10);
+        }
+        /* SOF0/1/2/3/5/6/7/9/10/11/13/14/15 里带尺寸 */
+        isSOF = (marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC;
+        if (isSOF && i + 9 <= bin.length) {
+          out.h = (bin.charCodeAt(i + 5) << 8) + bin.charCodeAt(i + 6);
+          out.w = (bin.charCodeAt(i + 7) << 8) + bin.charCodeAt(i + 8);
+          break;
+        }
+        i += 2 + len;
+      }
+    } catch (e) { /* 忽略 */ }
+    return out;
+  }
+
+  /* 按 EXIF 方向把图画正（画到 canvas 上时用），标准的那张 8 种情况表 */
+  function applyOrientation(ctx, o, w, h) {
+    switch (o) {
+      case 2: ctx.transform(-1, 0, 0, 1, w, 0); break;
+      case 3: ctx.transform(-1, 0, 0, -1, w, h); break;
+      case 4: ctx.transform(1, 0, 0, -1, 0, h); break;
+      case 5: ctx.transform(0, 1, 1, 0, 0, 0); break;
+      case 6: ctx.transform(0, 1, -1, 0, h, 0); break;
+      case 7: ctx.transform(0, -1, -1, 0, h, w); break;
+      case 8: ctx.transform(0, -1, 1, 0, 0, w); break;
+    }
+  }
+
+  /* 缩放 + 转正 + 转 JPEG。任何一步不行就原样返回，绝不阻塞发送。 */
+  function shrinkImage(dataUrl, cb) {
+    var img, o, w, h, swap, cw, ch, canvas, ctx, out, scale;
+    try { img = new Image(); } catch (e) { cb(dataUrl); return; }
+    if (!img || typeof img !== "object") { cb(dataUrl); return; }
+
+    img.onload = function () {
+      try {
+        w = img.naturalWidth || img.width || 0;
+        h = img.naturalHeight || img.height || 0;
+        if (!w || !h) { cb(dataUrl); return; }
+        var info = jpegInfo(dataUrl);
+        var rawO = info.o;
+        o = rawO;
+        /* 浏览器画 canvas 时已经按 EXIF 转正过了（自然宽高被换过），就别再转一次；
+           但仍然要重编码一遍 —— 把 EXIF 标记去掉，否则接口那边可能又按原样放倒。 */
+        if (o > 1 && info.w && info.h && w === info.h && h === info.w) { o = 0; }
+        if (w <= IMAGE_MAX_SIDE && h <= IMAGE_MAX_SIDE && dataUrl.length <= IMAGE_KEEP_CHARS && rawO === 1) {
+          cb(dataUrl); return;                       /* 本来就小又正，别折腾 */
+        }
+        scale = Math.min(IMAGE_MAX_SIDE / w, IMAGE_MAX_SIDE / h, 1);
+        cw = Math.round(w * scale) || 1;
+        ch = Math.round(h * scale) || 1;
+        canvas = document.createElement("canvas");
+        if (!canvas || !canvas.getContext || !canvas.toDataURL) { cb(dataUrl); return; }
+        swap = (o >= 5 && o <= 8);
+        canvas.width = swap ? ch : cw;
+        canvas.height = swap ? cw : ch;
+        ctx = canvas.getContext("2d");
+        if (!ctx || !ctx.drawImage || !ctx.transform) { cb(dataUrl); return; }
+        applyOrientation(ctx, o, cw, ch);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        out = canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+        if (!out || out.length < 64 || out.indexOf("data:image/jpeg") !== 0) { cb(dataUrl); return; }
+        cb(out);
+      } catch (e2) { cb(dataUrl); }
+    };
+    img.onerror = function () { cb(dataUrl); };
+    try { img.src = dataUrl; } catch (e3) { cb(dataUrl); }
+  }
+
+  /* ------------------- 编辑最后一条提问并重发 -------------------------- */
   /* 只能编辑「最后一条用户消息」：发送时把它以及它后面的回答全部丢掉，
      再按新内容重新问一遍。这样不用做消息级删除，语义也最简单。 */
 
@@ -1298,6 +1574,8 @@
     if (!m || m.role !== "user") { return; }
     editingIndex = index;
     $("input").value = m.content;
+    pendingImages = m.images ? m.images.slice(0) : [];
+    renderAttachBar();
     renderEditBar();
     setStatus("编辑中：发送后会从这里重新回答");
     autoScroll = false;                 /* 别把用户看的位置顶走 */
@@ -1310,6 +1588,7 @@
     if (editingIndex < 0) { return; }
     editingIndex = -1;
     $("input").value = "";
+    clearPendingImages();
     renderEditBar();
     autoScroll = false;
     renderMessages();                 /* 让「编辑」按钮回到气泡上 */
@@ -1342,6 +1621,8 @@
     if (!trim(text)) { return; }
     editingIndex = idx;
     $("input").value = text;
+    pendingImages = conv.messages[idx].images ? conv.messages[idx].images.slice(0) : [];
+    renderAttachBar();
     send();
     /* send() 可能提前返回（例如 Key 没填），那就别留下奇怪的编辑态 */
     if (editingIndex >= 0) {
@@ -1350,11 +1631,12 @@
     }
   }
 
-  function addMessage(conv, role, content, reasoning) {
+  function addMessage(conv, role, content, reasoning, images) {
     var msg = {
       role: role,
       content: content || "",
       reasoning: reasoning || "",
+      images: normalizeImages(images),
       ts: nowMs()
     };
     conv.messages.push(msg);
@@ -1366,7 +1648,8 @@
         if (conv.messages[i].role === "user") { userCount++; }
       }
       if (userCount === 1) {
-        var t = content.replace(/\s+/g, " ");
+        var t = (content || "").replace(/\s+/g, " ");
+        if (!trim(t) && msg.images) { t = "（图片）"; }
         conv.title = t.length > 18 ? t.substring(0, 18) + "…" : t;
       }
     }
@@ -1389,11 +1672,15 @@
      结果缓存在消息对象上（tkLen 是长度指纹），这样每次发送只需要算新内容，
      不然 1M 级别的窗口每次都要把几十万字重新数一遍。 */
   function msgTokens(m) {
-    if (!m || !m.content || m.skip) { return 0; }
+    var imgs;
+    if (!m || m.skip) { return 0; }
     if (m.role !== "user" && m.role !== "assistant") { return 0; }
-    if (typeof m.tk === "number" && m.tkLen === m.content.length) { return m.tk; }
-    m.tk = estimateTokens(m.content) + TOKENS_PER_MESSAGE;
+    imgs = (m.images && m.images.length) ? m.images.length : 0;
+    if (!m.content && !imgs) { return 0; }
+    if (typeof m.tk === "number" && m.tkLen === m.content.length && m.tkImgs === imgs) { return m.tk; }
+    m.tk = estimateTokens(m.content) + imgs * IMAGE_TOKENS + TOKENS_PER_MESSAGE;
     m.tkLen = m.content.length;
+    m.tkImgs = imgs;
     return m.tk;
   }
 
@@ -1427,6 +1714,19 @@
     return s;
   }
 
+  /* 带图片的 user 消息，content 要换成块数组（接口规定图片只能出现在 user 里）；
+     没有图片的仍然是纯字符串，体积小一点。 */
+  function contentBlocks(m) {
+    var blocks, k;
+    if (m.role !== "user" || !m.images || !m.images.length) { return m.content; }
+    blocks = [];
+    if (m.content) { blocks.push({ type: "text", text: m.content }); }
+    for (k = 0; k < m.images.length; k++) {
+      blocks.push({ type: "image_url", image_url: { url: m.images[k] } });
+    }
+    return blocks;
+  }
+
   /* 组装发给接口的消息数组 */
   function buildPayload(conv) {
     var out = [];
@@ -1440,8 +1740,8 @@
     for (i = start; i < conv.messages.length; i++) {
       m = conv.messages[i];
       if (m.role !== "user" && m.role !== "assistant") { continue; }
-      if (m.skip || !m.content) { continue; }
-      history.push({ role: m.role, content: m.content });
+      if (m.skip || (!m.content && !(m.images && m.images.length))) { continue; }
+      history.push({ role: m.role, content: contentBlocks(m) });
     }
     /* 开头必须是 user，否则模型可能报错 */
     while (history.length && history[0].role !== "user") { history.shift(); }
@@ -1937,7 +2237,8 @@
 
     var input = $("input");
     var text = input.value;
-    if (!trim(text)) {
+    var imgs = pendingImages.slice(0);
+    if (!trim(text) && !imgs.length) {
       if (editingIndex >= 0) { setStatus("编辑内容不能为空", true); }
       return;
     }
@@ -1960,8 +2261,10 @@
     /* 编辑重发：先把这条提问和它后面的内容裁掉，再从这条重新问 */
     consumeEdit(conv);
 
-    addMessage(conv, "user", text, "");
+    addMessage(conv, "user", text, "", imgs);
     input.value = "";
+    pendingImages = [];
+    renderAttachBar();
     addMessage(conv, "assistant", "", "");
     var target = conv.messages[conv.messages.length - 1];
     target.pending = true;
@@ -2184,6 +2487,23 @@
       }
     };
 
+    /* 选图片：不支持 FileReader 的老浏览器就别显示这个按钮了 */
+    if (!window.FileReader || !$("imgBtn")) {
+      if ($("imgBtn")) { $("imgBtn").style.display = "none"; }
+    } else {
+      $("imgBtn").onclick = function () {
+        var f = $("imgFile");
+        if (f.click) { f.click(); }
+        else { setStatus("这个浏览器不支持选图片", true); }
+      };
+      $("imgFile").onchange = function () {
+        var f = $("imgFile");
+        var files = f && f.files ? f.files : null;
+        if (files && files.length) { addImageFiles(files); }
+        f.value = "";                    /* 便于再次选同一张 */
+      };
+    }
+
     $("newChat").onclick = newConversation;
     $("clearChat").onclick = clearCurrentConversation;
 
@@ -2289,6 +2609,7 @@
     autoScroll = true;              /* 打开就停在最新消息处，手机上不用先往上翻 */
     renderConvList();
     renderMessages();
+    renderAttachBar();
     syncHeaderSpace();
     syncComposerSpace();
     updateToBottom();

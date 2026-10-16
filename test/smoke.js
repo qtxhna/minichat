@@ -92,6 +92,7 @@ var byId = {};
  "newlineBtn", "sidebar", "topbar", "themeBtn", "themeSel",
  "settingsHead", "settingsCaret", "settingsHint", "settingsBody", "settingsBlock",
  "mdEnabled", "streamEnabled", "composer", "editBar", "editCancel", "effortSel",
+ "attachBar", "imgBtn", "imgFile",
  "exportChat", "importChat", "ioPanel", "ioTitle", "ioHint", "ioText", "ioCopy", "ioDownload", "ioPick", "ioImport", "ioFile", "ioClose"].forEach(function (id) { byId[id] = makeEl("div"); });
 
 var metaTheme = makeEl("meta");
@@ -1372,6 +1373,185 @@ window.setTimeout(function () {
     }
     return false;
   })());
+
+  console.log("\n[23] 图片上传");
+  lsData = {};
+  lsQuota = 5 * 1024 * 1024;
+  global.window.localStorage = localStorage;
+  var IMG = "data:image/png;base64," + new Array(300).join("A");
+  window.FileReader = function () {
+    var self = this;
+    this.readAsDataURL = function () { self.result = IMG; self.onload(); };
+    this.readAsText = function () { self.result = byId.ioText.value; self.onload(); };
+  };
+  loadApp();
+  byId.apiKey.value = "sk-img";
+  byId.saveSettings.onclick();
+  check("默认模型支持图片", byId.model.value === "deepseek-flash", byId.model.value);
+  check("输入框旁边有「图片」按钮", typeof byId.imgBtn.onclick === "function");
+
+  /* 选一张图 */
+  byId.imgFile.files = [{ name: "a.png", size: 2048 }];
+  byId.imgFile.onchange();
+  check("选图后出现缩略图", byId.attachBar.className === "attach-bar on" && byId.attachBar.childNodes.length === 1,
+    byId.attachBar.className + "/" + byId.attachBar.childNodes.length);
+  var chip = byId.attachBar.childNodes[0];
+  check("缩略图用的是图片本身", chip.childNodes[0].tagName === "img" &&
+    chip.childNodes[0].getAttribute("src") === IMG);
+  check("缩略图带移除按钮", textOf(chip.childNodes[1]) === "✕");
+  check("选完清空 input 便于再选", byId.imgFile.value === "", byId.imgFile.value);
+
+  /* 带图发送：user 消息的 content 要是块数组 */
+  byId.input.value = "这张图里有什么？";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var imgPayload = JSON.parse(lastXhr.body).messages;
+  var lastMsg = imgPayload[imgPayload.length - 1];
+  check("带图的消息 content 是块数组", lastMsg.role === "user" && Object.prototype.toString.call(lastMsg.content) === "[object Array]",
+    JSON.stringify(lastMsg.content).substring(0, 80));
+  check("第一块是文字", lastMsg.content[0].type === "text" && lastMsg.content[0].text === "这张图里有什么？",
+    JSON.stringify(lastMsg.content[0]));
+  check("第二块是图片 data URL", lastMsg.content[1].type === "image_url" &&
+    lastMsg.content[1].image_url.url === IMG, JSON.stringify(lastMsg.content[1]).substring(0, 60));
+  check("发完清空缩略图", byId.attachBar.className === "attach-bar" && byId.attachBar.childNodes.length === 0,
+    byId.attachBar.className);
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "一只猫" } }] }));
+
+  /* 气泡里要能看到图 */
+  var imgBubble = byId.messages.childNodes[0];
+  check("气泡里渲染了图片", (function () {
+    var box = imgBubble.childNodes[imgBubble.childNodes.length - 1];
+    return box.className === "msg-imgs" && box.childNodes[0].tagName === "img" &&
+      box.childNodes[0].getAttribute("src") === IMG;
+  })(), repr(imgBubble));
+  check("文字和图片都在", textOf(imgBubble).indexOf("这张图里有什么？") > -1 && repr(imgBubble).indexOf("img") > -1);
+
+  /* 只发图片、不打字 */
+  byId.imgFile.files = [{ name: "b.png", size: 2048 }];
+  byId.imgFile.onchange();
+  byId.input.value = "";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var onlyImg = JSON.parse(lastXhr.body).messages;
+  var lastOnly = onlyImg[onlyImg.length - 1];
+  check("可以只发图片", lastOnly.content.length === 1 && lastOnly.content[0].type === "image_url",
+    JSON.stringify(lastOnly.content).substring(0, 60));
+  check("纯图片消息不显示空白气泡",
+    (function () {
+      /* 最后一条是「正在思考…」的占位，要看倒数第二条 */
+      var b = byId.messages.childNodes[byId.messages.childNodes.length - 2];
+      var i, hasBody = false, hasImg = false;
+      for (i = 0; i < b.childNodes.length; i++) {
+        if (b.childNodes[i].className === "msg-body") { hasBody = true; }
+        if (b.childNodes[i].className === "msg-imgs") { hasImg = true; }
+      }
+      return hasImg && !hasBody;
+    })());
+  check("纯图片对话标题兜底", byId.convTitle.childNodes[0].textContent === "这张图里有什么？",
+    byId.convTitle.childNodes[0].textContent);
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "也行" } }] }));
+
+  /* 历史里的图片要能存下来、并且只有 user 消息才发图片块 */
+  var saved = JSON.parse(lsData["minichat.conversations.v1"]);
+  check("图片写进了 localStorage", JSON.stringify(saved).indexOf("data:image/png") > -1);
+  check("assistant 消息仍然是纯字符串", (function () {
+    var all = JSON.parse(lastXhr.body).messages, i;
+    for (i = 0; i < all.length; i++) {
+      if (all[i].role === "assistant" && Object.prototype.toString.call(all[i].content) === "[object Array]") { return false; }
+    }
+    return true;
+  })());
+
+  /* ✕ 移除 */
+  byId.imgFile.files = [{ name: "c.png", size: 2048 }];
+  byId.imgFile.onchange();
+  byId.imgFile.files = [{ name: "d.png", size: 2048 }];
+  byId.imgFile.onchange();
+  check("可以挂多张", byId.attachBar.childNodes.length === 2, byId.attachBar.childNodes.length + "");
+  byId.attachBar.childNodes[0].childNodes[1].onclick();
+  check("点 ✕ 移除一张", byId.attachBar.childNodes.length === 1, byId.attachBar.childNodes.length + "");
+  byId.input.value = "只带第二张";
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  var oneImg = JSON.parse(lastXhr.body).messages;
+  check("移除的那张不会发出去", oneImg[oneImg.length - 1].content.length === 2,
+    JSON.stringify(oneImg[oneImg.length - 1].content).length + "");
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "好" } }] }));
+
+  /* 一次最多 4 张 */
+  byId.imgFile.files = [{ size: 1 }, { size: 1 }, { size: 1 }, { size: 1 }, { size: 1 }];
+  byId.imgFile.onchange();
+  check("一次最多 4 张", byId.attachBar.childNodes.length === 4, byId.attachBar.childNodes.length + "");
+  check("超出会提示", /最多/.test(textOf(byId.status)), textOf(byId.status));
+  byId.imgFile.files = [{ size: 1 }];
+  byId.imgFile.onchange();
+  check("已经满了就不再加", byId.attachBar.childNodes.length === 4, byId.attachBar.childNodes.length + "");
+
+  /* 不是图片的文件（先清空挂件，否则会先撞上「最多 4 张」） */
+  byId.attachBar.childNodes[0].childNodes[1].onclick();
+  byId.attachBar.childNodes[0].childNodes[1].onclick();
+  byId.attachBar.childNodes[0].childNodes[1].onclick();
+  byId.attachBar.childNodes[0].childNodes[1].onclick();
+  check("挂件可以逐个清空", byId.attachBar.childNodes.length === 0, byId.attachBar.childNodes.length + "");
+  window.FileReader = function () {
+    var self = this;
+    this.readAsDataURL = function () { self.result = "data:text/plain;base64,AAAA"; self.onload(); };
+  };
+  byId.imgFile.files = [{ size: 1 }];
+  byId.imgFile.onchange();
+  check("非图片文件被拒绝", /不是图片/.test(textOf(byId.status)), textOf(byId.status));
+
+  /* 非 flash 模型给提示 */
+  window.FileReader = function () {
+    var self = this;
+    this.readAsDataURL = function () { self.result = IMG; self.onload(); };
+  };
+  byId.model.value = "deepseek-v4-pro";
+  byId.saveSettings.onclick();
+  byId.imgFile.files = [{ size: 1 }];
+  byId.imgFile.onchange();
+  check("非 flash 模型会提示可能不支持", /只有 deepseek-flash 支持图片/.test(textOf(byId.status)), textOf(byId.status));
+  byId.model.value = "deepseek-flash";
+  byId.saveSettings.onclick();
+
+  /* 编辑/重试要把图片带回输入框 */
+  byId.newChat.onclick();
+  byId.input.value = "带图的问题";
+  byId.imgFile.files = [{ size: 1 }];
+  byId.imgFile.onchange();
+  byId.input.onkeydown({ keyCode: 13, shiftKey: false, preventDefault: function () {} });
+  lastXhr.respond(200, JSON.stringify({ choices: [{ message: { content: "回答" } }] }));
+  check("发送后缩略图清空", byId.attachBar.childNodes.length === 0);
+  collectClass(byId.messages, "edit-btn")[0].onclick();
+  check("点编辑会把图片放回输入框", byId.attachBar.className === "attach-bar on" && byId.attachBar.childNodes.length === 1,
+    byId.attachBar.className + "/" + byId.attachBar.childNodes.length);
+  byId.editCancel.onclick();
+  check("取消编辑后缩略图也清掉", byId.attachBar.className === "attach-bar", byId.attachBar.className);
+
+  /* 重开页面：历史里的图片还在 */
+  loadApp();
+  check("重开后历史里的图片还在", (function () {
+    var all = byId.messages.childNodes, i, j, k;
+    for (i = 0; i < all.length; i++) {
+      for (j = 0; j < all[i].childNodes.length; j++) {
+        k = all[i].childNodes[j];
+        if (k.className === "msg-imgs" && k.childNodes[0].getAttribute("src") === IMG) { return true; }
+      }
+    }
+    return false;
+  })());
+
+  /* 导入时脏的 images 会被过滤掉 */
+  byId.importChat.onclick();
+  byId.ioText.value = JSON.stringify({
+    title: "带图的导入",
+    messages: [
+      { role: "user", content: "看看这个", images: [IMG, "http://example.com/x.png", 123, "data:text/html,<b>"] }
+    ]
+  });
+  byId.ioImport.onclick();
+  check("导入时只保留 data:image/ 图片", (function () {
+    var b = byId.messages.childNodes[0], box = null, i;
+    for (i = 0; i < b.childNodes.length; i++) { if (b.childNodes[i].className === "msg-imgs") { box = b.childNodes[i]; } }
+    return !!box && box.childNodes.length === 1 && box.childNodes[0].getAttribute("src") === IMG;
+  })(), repr(byId.messages.childNodes[0]));
 
   report();
 }, 300);

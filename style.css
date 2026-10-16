@@ -280,6 +280,7 @@ textarea { resize: none; }
 .composer-actions { margin-top: 8px; }
 .composer-actions .btn { float: right; margin-left: 8px; }
 .composer-actions .btn-newline { float: left; min-width: 76px; background: #fff; }
+.composer-actions .btn-img { float: left; min-width: 76px; margin-left: 8px; background: #fff; }
 .composer-actions:after { content: ""; display: table; clear: both; }
 #hint { display: none; }   /* 手机上不占地方 */
 
@@ -300,6 +301,35 @@ textarea { resize: none; }
 .edit-cancel { float: right; min-width: 64px; min-height: 32px; background: #fff; }
 
 .empty { color: #888; padding: 20px 4px; }
+
+/* 待发送的图片：缩略图 + 右上角 ✕ */
+.attach-bar { display: none; margin: 0 0 8px 0; }
+.attach-bar.on { display: block; }
+.attach-bar:after { content: ""; display: table; clear: both; }
+.attach-item { position: relative; float: left; margin: 0 10px 8px 0; }
+.attach-item img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border: 1px solid #9aa3b0;
+  border-radius: 4px;
+  background: #fff;
+}
+.attach-x {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 26px;
+  height: 26px;
+  line-height: 24px;
+  text-align: center;
+  font-size: 14px;
+  color: #333;
+  border: 1px solid #9aa3b0;
+  border-radius: 14px;
+  background: #fff;
+  cursor: pointer;
+}
 
 /* ==========================================================================
  * 消息气泡
@@ -334,6 +364,18 @@ textarea { resize: none; }
 .msg.assistant .msg-body { background: #fff; }
 .msg.error .msg-body { background: #fdf1f0; border-color: #e0b4b1; color: #8e2a25; }
 .msg.pending .msg-body { color: #777; }
+
+/* 气泡里的图片（先文字后图片，和发给接口的块顺序一致） */
+.msg-imgs { margin: 6px 0 0 0; }
+.msg-img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin-bottom: 6px;
+  border: 1px solid #d5dae1;
+  border-radius: 4px;
+  background: #fff;
+}
 
 /* 思考过程：标题栏可点，展开后是一块灰底小字 */
 .think { margin-bottom: 6px; }
@@ -596,6 +638,7 @@ textarea { resize: none; }
   .edit-btn,
   .retry-btn { min-height: 0; min-width: 0; margin-top: -4px; padding: 2px 8px; font-size: 12px; }
   .edit-cancel { min-height: 0; min-width: 0; }
+  .composer-actions .btn-img { min-height: 0; min-width: 60px; padding: 5px 8px; font-size: 13px; }
   .edit-text { max-width: 70%; }
 
   .btn { min-height: 0; padding: 5px 10px; font-size: 13px; }
@@ -672,6 +715,9 @@ html.dark .msg.assistant .msg-body { background: #23272e; }
 html.dark .msg.user .msg-body { background: #24334a; border-color: #3b5a86; }
 html.dark .msg.error .msg-body { background: #3a2320; border-color: #6b3a34; color: #f0b3ad; }
 html.dark .msg.pending .msg-body { color: #9aa3ad; }
+html.dark .attach-item img { border-color: #454b54; background: #23272e; }
+html.dark .attach-x { background: #2a2f36; border-color: #454b54; color: #e6e6e6; }
+html.dark .msg-img { border-color: #383d45; background: #23272e; }
 html.dark .msg-head { color: #8f97a3; }
 html.dark .empty { color: #8f97a3; }
 
